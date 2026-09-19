@@ -1065,7 +1065,7 @@ def is_download_progress(text: str) -> bool:
 
 
 def run_worker(py: Path, con: Console, log_path: Path, worker_args: list[str], budget_s: int,
-               progress_label: str, on_joints=None) -> dict:
+               progress_label: str, on_joints=None, env_extra: dict | None = None) -> dict:
     """Run `lerobot_doctor.py --worker ...` in the venv and collect its @@result."""
     result_holder = {}
     state = {"progress": ""}
@@ -1105,7 +1105,9 @@ def run_worker(py: Path, con: Console, log_path: Path, worker_args: list[str], b
 
     cmd = [str(py), str(Path(__file__).resolve()), "--worker", *worker_args]
     t0 = time.monotonic()
-    rc = stream_process(cmd, con, log_path, env=child_env(), timeout=budget_s, on_line=on_line)
+    env = child_env()
+    env.update(env_extra or {})
+    rc = stream_process(cmd, con, log_path, env=env, timeout=budget_s, on_line=on_line)
     seconds = round(time.monotonic() - t0, 1)
     if rc == -999:
         return {"status": "TIMEOUT", "evidence": "not_run", "seconds": seconds, "log": str(log_path)}
@@ -1124,6 +1126,18 @@ def run_worker(py: Path, con: Console, log_path: Path, worker_args: list[str], b
             break
     return {"status": status, "evidence": "measured" if status in STATUS_MEASURED_FAIL else "not_run",
             "returncode": rc, "seconds": seconds, "log": str(log_path), "error": err, **{k: v for k, v in result_holder.items() if k != "status"}}
+
+
+def run_worker_with_download_retry(py, con, log_path, wargs, budget, label, on_joints=None) -> dict:
+    """Hugging Face's xet transfer fails on some networks with CAS errors; one retry over plain
+    HTTP (HF_HUB_DISABLE_XET=1) resolves most of those before we call it a download failure."""
+    r = run_worker(py, con, log_path, wargs, budget, label, on_joints=on_joints)
+    if r.get("status") == "FAIL_DOWNLOAD":
+        con.item("warn", "下载中断，改用普通 HTTP 重试一次（已下好的部分保留）",
+                 "download interrupted; retrying once over plain HTTP (finished parts are kept)")
+        r = run_worker(py, con, log_path, wargs, budget, label, on_joints=on_joints, env_extra={"HF_HUB_DISABLE_XET": "1"})
+        r["retried_without_xet"] = True
+    return r
 
 
 def orchestrate(args, con: Console, py: Path, report: Report) -> None:
@@ -1201,7 +1215,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
         wargs = ["infer", "--level", lv.id, "--device", device, "--dtype", dtype]
         if args.vram_cap:
             wargs += ["--vram-cap", str(args.vram_cap)]
-        r = run_worker(py, con, logs / f"{lv.id}-infer.log", wargs, INFER_BUDGET_S, lv.label, on_joints=joints_cb)
+        r = run_worker_with_download_retry(py, con, logs / f"{lv.id}-infer.log", wargs, INFER_BUDGET_S, lv.label, on_joints=joints_cb)
         r["dtype"] = dtype
         r["device"] = device
         r["params"] = (weights.get(lv.id) or {}).get("params") or r.get("params")
@@ -1229,7 +1243,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
         budget = TRAIN_L1_BUDGET_S if lv.id == "L1" else TRAIN_BUDGET_S
         if lv.id == "L1" and sim:
             sim.begin_level(lv.label + " " + bi("（训练后）", "(after training)"))
-        r = run_worker(py, con, logs / f"{lv.id}-train.log", wargs, budget, lv.label, on_joints=joints_cb)
+        r = run_worker_with_download_retry(py, con, logs / f"{lv.id}-train.log", wargs, budget, lv.label, on_joints=joints_cb)
         r["params"] = (weights.get(lv.id) or {}).get("params") or r.get("params")
         results[lv.id]["train"] = r
         if r.get("status") == "PASS":
