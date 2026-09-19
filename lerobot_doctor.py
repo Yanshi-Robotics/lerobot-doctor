@@ -40,7 +40,7 @@ from types import SimpleNamespace
 # Constants. Every threshold is named and carries its source; nothing is tuned per machine.
 # ----------------------------------------------------------------------------------------------
 
-TOOL_VERSION = "0.1.1"
+TOOL_VERSION = "0.1.2"
 LEROBOT_VERSION = "0.6.1"
 PYTHON_VERSION = "3.12"                         # lerobot 0.6.1: Requires-Python >=3.12
 VISER_SPEC = "viser[urdf]==1.1.0"               # same pin as the Season-1 course repo

@@ -317,6 +317,21 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(fitted.endswith("…"))
 
 
+class ReleaseConsistencyTests(unittest.TestCase):
+    """The one-liner fetches the program at the tag baked into the launcher; all three must agree."""
+
+    def test_launcher_tags_match_tool_version(self):
+        import re
+        tag = f"v{doc.TOOL_VERSION}"
+        sh = (ROOT / "doctor.sh").read_text(encoding="utf-8")
+        ps = (ROOT / "doctor.ps1").read_text(encoding="utf-8")
+        self.assertIn(f'DOCTOR_TAG="${{DOCTOR_TAG:-{tag}}}"', sh)
+        self.assertIn(f'else {{ "{tag}" }}', ps)
+        for readme in (ROOT / "README.md", ROOT / "docs" / "i18n" / "zh" / "README.md"):
+            tags = set(re.findall(r"lerobot-doctor/(v\d+\.\d+\.\d+)/", readme.read_text(encoding="utf-8")))
+            self.assertEqual(tags, {tag}, readme)
+
+
 class WorkerProtocolTests(unittest.TestCase):
     def test_result_line_is_json(self):
         import contextlib

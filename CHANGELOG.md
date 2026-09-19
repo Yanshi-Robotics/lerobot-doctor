@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 - 2026-09-19
+
+- The launchers' default `DOCTOR_TAG` still said `v0.1.0`, so the `v0.1.1` one-liner fetched the
+  0.1.0 program. The default now equals the published tag; a release check greps for it.
+
 ## 0.1.1 - 2026-09-19
 
 - Progress display: one status line redrawn in place, cut to the terminal width (a wrapped line
