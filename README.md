@@ -17,6 +17,32 @@ Every verdict carries its evidence. A "cannot" is printed only after a measured 
 
 ![The 3D simulation page while a policy drives the SO-101](docs/images/sim-page.png)
 
+## Quick start
+
+Copy one block (the copy button appears when you hover over it), paste it into a terminal, press Enter.
+
+macOS, in Terminal:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.sh | bash
+```
+
+Linux, in a terminal:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.sh | bash
+```
+
+Windows 10/11, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.ps1 | iex
+```
+
+Prefer a download: get the ZIP of this repository, unpack it, then double-click `doctor.bat` on Windows, drag `doctor.command` into a Terminal window on macOS, or run `bash doctor.sh` on Linux.
+
+Expect 30 to 90 minutes, most of it downloads (about 7 GB of packages and 13 GB of model weights), and about 30 GB of free disk. The screen always shows what is happening; `Ctrl-C` stops the run and keeps the finished parts. Model weights go to the standard Hugging Face cache, so a later LeRobot course reuses them.
+
 ## Key features
 
 - Runs on Linux, macOS (Apple Silicon and Intel) and Windows 10/11 from one pasted command; no Python setup by the user.
@@ -25,18 +51,6 @@ Every verdict carries its evidence. A "cannot" is printed only after a measured 
 - Per level: timed forward passes on `lerobot/svla_so101_pickplace`, a ten-second simulated task on a kinematic SO-101 (viser, `127.0.0.1:4604`), then real training steps with `lerobot`'s own optimizer and update function.
 - A fixed rule tree turns measurements into per-level verdicts and one SO-101 route: everything local, cloud training with local inference, or record-only.
 - Bilingual (Chinese and English) terminal output, progress every few seconds, and a machine-readable report at `~/lerobot-doctor/report-<date>.json`.
-
-## Quick start
-
-| System | Open | Paste |
-|---|---|---|
-| macOS | Terminal | `curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.sh \| bash` |
-| Linux | Terminal | same as macOS |
-| Windows 10/11 | PowerShell | `irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.ps1 \| iex` |
-
-Prefer a download: get the ZIP of this repository, unpack it, then double-click `doctor.bat` on Windows, drag `doctor.command` into a Terminal window on macOS, or run `bash doctor.sh` on Linux.
-
-Expect 30 to 90 minutes, most of it downloads (about 7 GB of packages and 13 GB of model weights), and about 30 GB of free disk. The screen always shows what is happening; `Ctrl-C` stops the run and keeps the finished parts. Model weights go to the standard Hugging Face cache, so a later LeRobot course reuses them.
 
 ## What it checks
 

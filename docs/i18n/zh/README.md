@@ -17,6 +17,32 @@
 
 ![策略驱动 SO-101 时的三维模拟页面](../../images/sim-page.png)
 
+## 快速开始
+
+复制一整块（鼠标移上去右上角有复制按钮），粘进终端，回车。
+
+macOS，在「终端」里：
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.sh | bash
+```
+
+Linux，在终端里：
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.sh | bash
+```
+
+Windows 10/11，在 PowerShell 里：
+
+```powershell
+irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.ps1 | iex
+```
+
+想下载文件：下载本仓库的 ZIP 并解压，Windows 双击 `doctor.bat`，macOS 把 `doctor.command` 拖进终端窗口，Linux 运行 `bash doctor.sh`。
+
+预计 30 到 90 分钟，大部分是下载（约 7 GB 的包和 13 GB 的模型权重），需要约 30 GB 空闲磁盘。屏幕上一直显示正在做什么；`Ctrl-C` 停止并保留已完成的部分。模型权重放在标准的 Hugging Face 缓存里，之后学 LeRobot 课程时直接复用。
+
 ## 主要能力
 
 - Linux、macOS（Apple Silicon 与 Intel）、Windows 10/11 都是粘一行命令；用户不用自己配 Python。
@@ -25,18 +51,6 @@
 - 每级：在 `lerobot/svla_so101_pickplace` 上计时前向，在运动学 SO-101（viser，`127.0.0.1:4604`）上执行十秒模拟任务，再用 `lerobot` 自己的优化器和更新函数真训几步。
 - 写死的规则树把测量值变成每级结论和一条 SO-101 路线：全流程本地、上云训练本地推理、或只能录数据。
 - 中英双语终端输出，每隔几秒就有进度，机器可读的报告落在 `~/lerobot-doctor/report-<日期>.json`。
-
-## 快速开始
-
-| 系统 | 打开 | 粘贴 |
-|---|---|---|
-| macOS | 终端 | `curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.sh \| bash` |
-| Linux | 终端 | 与 macOS 相同 |
-| Windows 10/11 | PowerShell | `irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.ps1 \| iex` |
-
-想下载文件：下载本仓库的 ZIP 并解压，Windows 双击 `doctor.bat`，macOS 把 `doctor.command` 拖进终端窗口，Linux 运行 `bash doctor.sh`。
-
-预计 30 到 90 分钟，大部分是下载（约 7 GB 的包和 13 GB 的模型权重），需要约 30 GB 空闲磁盘。屏幕上一直显示正在做什么；`Ctrl-C` 停止并保留已完成的部分。模型权重放在标准的 Hugging Face 缓存里，之后学 LeRobot 课程时直接复用。
 
 ## 它检查什么
 
