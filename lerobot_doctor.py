@@ -40,7 +40,7 @@ from types import SimpleNamespace
 # Constants. Every threshold is named and carries its source; nothing is tuned per machine.
 # ----------------------------------------------------------------------------------------------
 
-TOOL_VERSION = "0.1.2"
+TOOL_VERSION = "0.1.3"
 LEROBOT_VERSION = "0.6.1"
 PYTHON_VERSION = "3.12"                         # lerobot 0.6.1: Requires-Python >=3.12
 VISER_SPEC = "viser[urdf]==1.1.0"               # same pin as the Season-1 course repo
@@ -179,6 +179,8 @@ class Console:
             if ascii_only else
             {"ok": "✅", "warn": "⚠️ ", "bad": "⛔", "skip": "—", "run": "⏳", "info": "·"}
         )
+        if self.tty and platform.system() == "Windows":
+            os.system("")   # turns on VT escape processing in the Windows console (colours, \r)
         self._lock = threading.RLock()
         self._last_output = time.monotonic()
         self._activity = ""
@@ -1031,43 +1033,237 @@ def evaluate(report: dict) -> dict:
     return out
 
 
-def render_report(con: Console, report: dict, verdicts: dict):
-    con.line("")
-    con.line("=" * 78)
-    con.line(bi("体检报告", "Report"))
-    con.line("=" * 78)
+# ----------------------------------------------------------------------------------------------
+# The boxed terminal report.
+# ----------------------------------------------------------------------------------------------
+
+REPORT_MAX_WIDTH = 100
+REPORT_MIN_WIDTH = 60
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+BOX = {"tl": "╔", "tr": "╗", "bl": "╚", "br": "╝", "h": "═", "v": "║", "ml": "╠", "mr": "╣",
+       "rule": "─", "col": "│", "tee_l": "├", "tee_r": "┤", "cross": "┼", "tee_t": "┬", "tee_b": "┴",
+       "ctl": "┌", "ctr": "┐", "cbl": "└", "cbr": "┘"}
+BOX_ASCII = {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "=", "v": "|", "ml": "+", "mr": "+",
+             "rule": "-", "col": "|", "tee_l": "+", "tee_r": "+", "cross": "+", "tee_t": "+", "tee_b": "+",
+             "ctl": "+", "ctr": "+", "cbl": "+", "cbr": "+"}
+# Single-cell marks: emoji are two cells wide in some terminals and one in others, which breaks
+# a box's right border. Colour carries the meaning on a terminal; the glyph alone does in a log.
+MARKS = {"ok": "✓", "warn": "!", "bad": "✗", "skip": "–"}
+MARKS_ASCII = {"ok": "+", "warn": "!", "bad": "x", "skip": "-"}
+COLORS = {"ok": "\x1b[32m", "warn": "\x1b[33m", "bad": "\x1b[31m", "skip": "\x1b[2m",
+          "bold": "\x1b[1m", "dim": "\x1b[2m", "reset": "\x1b[0m"}
+
+
+def vis_width(text: str) -> int:
+    return dwidth(_ANSI_RE.sub("", text))
+
+
+def wrap_cells(text: str, width: int) -> list[str]:
+    """Wrap by display width, preferring spaces; CJK text can break anywhere."""
+    words, lines, cur = text.split(" "), [], ""
+    for word in words:
+        cand = word if not cur else cur + " " + word
+        if vis_width(cand) <= width:
+            cur = cand
+            continue
+        if cur:
+            lines.append(cur)
+        cur = ""
+        while vis_width(word) > width:          # a single over-long token (CJK run): cut it
+            piece, used = "", 0
+            for ch in word:
+                if used + dwidth(ch) > width:
+                    break
+                piece += ch
+                used += dwidth(ch)
+            lines.append(piece)
+            word = word[len(piece):]
+        cur = word
+    if cur or not lines:
+        lines.append(cur)
+    return lines
+
+
+class BoxWriter:
+    """Draws one bordered report. Every line is padded to the same visible width."""
+
+    def __init__(self, con: Console, width: int):
+        self.con = con
+        self.chars = BOX_ASCII if con.ascii else BOX
+        self.marks = MARKS_ASCII if con.ascii else MARKS
+        self.color = con.tty and not con.ascii
+        self.width = width                     # total width including the two border cells
+        self.inner = width - 2
+
+    def paint(self, kind: str, text: str) -> str:
+        return f"{COLORS[kind]}{text}{COLORS['reset']}" if self.color else text
+
+    def mark(self, kind: str) -> str:
+        return self.paint(kind, self.marks[kind])
+
+    def top(self):
+        self.con.line(self.chars["tl"] + self.chars["h"] * self.inner + self.chars["tr"])
+
+    def bottom(self):
+        self.con.line(self.chars["bl"] + self.chars["h"] * self.inner + self.chars["br"])
+
+    def divider(self):
+        self.con.line(self.chars["ml"] + self.chars["h"] * self.inner + self.chars["mr"])
+
+    def row(self, text: str = "", indent: int = 2):
+        for piece in wrap_cells(text, self.inner - indent - 1) if text else [""]:
+            pad = self.inner - indent - vis_width(piece)
+            self.con.line(f"{self.chars['v']}{' ' * indent}{piece}{' ' * max(pad, 0)}{self.chars['v']}")
+
+    def heading(self, zh: str, en: str):
+        self.row(self.paint("bold", f"{zh}  {en}"), indent=2)
+
+    def table(self, header: list[str], rows: list[list[str]], indent: int = 2):
+        """A light table inside the box; column widths from content, last column absorbs the rest."""
+        cols = len(header)
+        widths = [max(vis_width(r[i]) for r in [header] + rows) for i in range(cols)]
+        avail = self.inner - indent - 1 - (3 * (cols - 1)) - 4
+        if sum(widths) > avail:                 # squeeze the two verdict columns evenly
+            extra = sum(widths) - avail
+            for i in (cols - 1, cols - 2):
+                cut = min(extra, widths[i] - 12)
+                widths[i] -= max(cut, 0)
+                extra -= max(cut, 0)
+        c = self.chars
+
+        def fmt(cells):
+            out = []
+            for i, cell in enumerate(cells):
+                lines = wrap_cells(cell, widths[i])
+                out.append(lines)
+            height = max(len(x) for x in out)
+            for k in range(height):
+                parts = []
+                for i in range(cols):
+                    piece = out[i][k] if k < len(out[i]) else ""
+                    parts.append(piece + " " * (widths[i] - vis_width(piece)))
+                self.row(f"{c['col']} " + f" {c['col']} ".join(parts) + f" {c['col']}", indent=indent)
+
+        self.row(c["ctl"] + c["tee_t"].join(c["rule"] * (w + 2) for w in widths) + c["ctr"], indent=indent)
+        fmt(header)
+        self.row(c["tee_l"] + c["cross"].join(c["rule"] * (w + 2) for w in widths) + c["tee_r"], indent=indent)
+        for r in rows:
+            fmt(r)
+        self.row(c["cbl"] + c["tee_b"].join(c["rule"] * (w + 2) for w in widths) + c["cbr"], indent=indent)
+
+
+def short_infer(v: dict, r: dict) -> str:
+    """One table cell for the inference verdict."""
+    st = r.get("status", "NOT_RUN")
+    ms = r.get("latency_ms")
+    demo = r.get("demo") or {}
+    if st == "PASS":
+        return f"{ms:.0f} ms/块 chunk · {demo.get('hz', 0):.0f} Hz" if demo else f"{ms:.0f} ms/块 chunk"
+    if st == "MARGINAL":
+        return f"{ms:.0f} ms/块 chunk（预算 budget {r.get('budget_ms', 0):.0f}）"
+    if st == "TOO_SLOW":
+        return f"{ms:.0f} ms/块 chunk（预算 budget {r.get('budget_ms', 0):.0f}）太慢 too slow"
+    if st in ("FAIL_OOM", "FAIL_RAM", "SKIPPED_FLOOR"):
+        return "装不下 does not fit"
+    return "未测 not tested"
+
+
+def short_train(v: dict, r: dict) -> str:
+    st = r.get("status", "NOT_RUN")
+    if st == "PASS":
+        base = f"{r['hours']:.1f} h · batch {r['batch']}"
+        if v.get("cloud"):
+            return base + " → 上云 cloud"
+        if v.get("mark") == "warn":
+            return base + " 过夜 overnight"
+        return base
+    if st in ("FAIL_OOM", "FAIL_RAM"):
+        return "装不下 → 上云 cloud"
+    if st == "SKIPPED_FLOOR":
+        return "前向都装不下 no forward → 上云 cloud"
+    return "未测 not tested"
+
+
+def render_report(con: Console, report: dict, verdicts: dict, path: Path | None = None):
+    width = max(REPORT_MIN_WIDTH, min(REPORT_MAX_WIDTH, shutil.get_terminal_size((100, 24)).columns - 1))
+    box = BoxWriter(con, width)
     specs = report["specs"]
-    dev = {"cuda": "CUDA", "mps": "MPS", "cpu": "CPU"}[specs["accelerator"]]
-    con.line(f"  {specs['os']} · {dev} {specs.get('device_mem_gb')} GB · RAM {specs['ram_gb']} GB · "
-             f"{bi('总耗时', 'total')} {fmt_duration(report.get('seconds', 0))}")
     inst = report.get("install", {})
-    con.item("ok" if inst.get("status") == "PASS" else "bad",
-             f"LeRobot {LEROBOT_VERSION} 安装并可导入" if inst.get("status") == "PASS" else "LeRobot 0.6.1 装不上",
-             f"LeRobot {LEROBOT_VERSION} installed and importable" if inst.get("status") == "PASS" else "LeRobot 0.6.1 failed to install")
+    levels = report.get("levels", {})
+    con.line("")
+    box.top()
+    when = (report.get("finished_at") or now_iso()).replace("T", " ")[:16]
+    box.row(box.paint("bold", f"LeRobot Doctor {TOOL_VERSION} · 体检报告 Report") + f"   {when} · {fmt_duration(report.get('seconds', 0))}")
+    box.divider()
+
+    # ---- machine ---------------------------------------------------------------------------
+    box.heading("电脑", "Machine")
+    dev = {"cuda": "CUDA", "mps": "Apple MPS", "cpu": "CPU only"}[specs["accelerator"]]
+    gpu = specs["nvidia"][0]["name"] if specs.get("nvidia") else ("Apple Silicon" if specs["accelerator"] == "mps" else "—")
+    box.row(f"{specs['os']} · {specs['cpu']} · RAM {specs['ram_gb']} GB", indent=4)
+    unused = specs.get("nvidia") and specs["accelerator"] != "cuda"
+    box.row(f"GPU {gpu}" + (f"（{bi('本次未用', 'not used this run')}）" if unused else "")
+            + f" · {dev} {specs.get('device_mem_gb')} GB" + (" · bf16" if specs.get("bf16") else ""), indent=4)
+    if inst.get("status") == "PASS":
+        box.row(f"{box.mark('ok')} LeRobot {inst.get('lerobot', LEROBOT_VERSION)} · torch {inst.get('torch', '?')} · "
+                f"{bi('视频解码', 'video decode')} {'torchcodec' if inst.get('torchcodec') else 'pyav'}", indent=4)
+    else:
+        box.row(f"{box.mark('bad')} LeRobot {LEROBOT_VERSION} {bi('装不上', 'did not install')} · {inst.get('reason', '')} · {inst.get('log', '')}", indent=4)
+    box.divider()
+
     if verdicts.get("basics"):
-        con.item("ok", "组装 / 标定 / 遥操作 / 录数据：可以", "assemble / calibrate / teleoperate / record: yes")
-        for zh, en in verdicts["notes"]:
-            con.line(f"      · {bi(zh, en)}")
+        box.heading("基础", "Basics")
+        box.row(f"{box.mark('ok')} {bi('组装 / 标定 / 遥操作 / 录数据', 'assemble / calibrate / teleoperate / record')}", indent=4)
+        for zh, en in verdicts.get("notes", []):
+            box.row(f"· {zh}", indent=6)
+            box.row(f"  {en}", indent=6)
+        box.divider()
+
     if verdicts["levels"]:
-        con.line("")
-        con.line(bi("各级实测（⛔ 只来自实测或硬门槛；— 是未测）", "Per level (a cross comes only from a measurement or a hard floor; a dash means not tested)"))
+        box.heading("各级实测", "Levels")
+        header = ["级 Lv", "模型 Model", "推理 Inference", "训练 Training"]
+        rows = []
         for lv in LEVELS:
             v = verdicts["levels"][lv.id]
-            con.line(f"  {lv.id} {lv.label} ({lv.group})")
-            con.line(f"      {bi('推理', 'inference')} {con.mark(v['infer']['mark'])} {v['infer']['zh']}")
-            con.line(f"      {' ' * len('推理 | inference')} {v['infer']['en']}")
-            con.line(f"      {bi('训练', 'training ')} {con.mark(v['train']['mark'])} {v['train']['zh']}")
-            con.line(f"      {' ' * len('训练 | training ')} {v['train']['en']}")
+            ri = levels.get(lv.id, {}).get("infer") or {}
+            rt = levels.get(lv.id, {}).get("train") or {}
+            rows.append([lv.id, lv.label,
+                         f"{box.mark(v['infer']['mark'])} {short_infer(v['infer'], ri)}",
+                         f"{box.mark(v['train']['mark'])} {short_train(v['train'], rt)}"])
+        box.table(header, rows)
+        box.row(box.paint("dim", f"{box.marks['ok']} 通过 ok   {box.marks['warn']} 有条件 conditional   "
+                                 f"{box.marks['bad']} 失败/硬门槛 failed/floor   {box.marks['skip']} 未测 not tested"), indent=4)
+        box.divider()
+
+        # ---- details: every non-green cell gets its full bilingual sentence (the evidence) ----
+        details = []
+        for lv in LEVELS:
+            v = verdicts["levels"][lv.id]
+            for stage_zh, stage_en, vv in (("推理", "inference", v["infer"]), ("训练", "training", v["train"])):
+                if vv["mark"] != "ok":
+                    details.append((lv, stage_zh, stage_en, vv))
             est = (report.get("estimate") or {}).get(lv.id, {}).get("train_estimate")
             measured = v["train"].get("cloud")
             if est and measured is not None and (est == "cloud") != measured:
-                words = {"local": "本地可训 / train locally", "tight": "勉强 / tight", "cloud": "需上云 / cloud"}
-                con.line(f"      * {bi('预估表曾说', 'the estimate said')} 「{words[est]}」，{bi('以实测为准', 'the measurement wins')}")
-    con.line("")
+                words = {"local": "本地可训 train locally", "tight": "勉强 tight", "cloud": "需上云 cloud"}
+                details.append((lv, "预估", "estimate", {"mark": "skip",
+                                                       "zh": f"预估表曾说「{words[est]}」，以实测为准",
+                                                       "en": f"the estimate said '{words[est]}'; the measurement wins"}))
+        if details:
+            box.heading("说明与依据", "Details and evidence")
+            for lv, stage_zh, stage_en, vv in details:
+                box.row(f"{box.mark(vv['mark'])} {lv.id} {lv.label} · {stage_zh} {stage_en}：{vv['zh']}", indent=4)
+                box.row(f"  {vv['en']}", indent=6)
+            box.divider()
+
     r = verdicts["route"]
-    con.line(bi("SO-101 路线", "SO-101 route") + f" [{r['rule']}]")
-    con.line(f"  {r['zh']}")
-    con.line(f"  {r['en']}")
+    box.heading("SO-101 路线", f"Route [{r['rule']}]")
+    box.row(box.paint("bold", r["zh"]), indent=4)
+    box.row(r["en"], indent=4)
+    box.bottom()
+    if path:
+        con.line(f"  {bi('完整数据（求助时发这个文件）', 'full data (share this file when asking for help)')}: {path}")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1974,9 +2170,7 @@ def _main(args, con: Console) -> int:
         verdicts = evaluate(report.data)
         report.data["verdicts"] = verdicts
         report.save()
-        render_report(con, report.data, verdicts)
-        con.line("")
-        con.line(bi(f"报告已保存：{report.path}   求助时把这个文件发出来。", f"Report saved: {report.path}   Share this file when asking for help."))
+        render_report(con, report.data, verdicts, report.path)
         if con.tty and not args.no_sim:
             try:   # keep the 3D page alive until the user has looked at everything
                 input(bi("回车退出（浏览器里的 3D 页面随之关闭）", "Enter to exit (the 3D page closes with it)") + " > ")
@@ -2053,7 +2247,7 @@ def _main(args, con: Console) -> int:
         report.data["seconds"] = round(time.monotonic() - started)
         report.save()
         con.stop_heartbeat()
-        render_report(con, report.data, evaluate(report.data))
+        render_report(con, report.data, evaluate(report.data), report.path)
         return 1
     con.item("ok", f"lerobot {inst['lerobot']} · torch {inst['torch']} · cuda {inst['cuda']} · mps {inst['mps']} · torchcodec {inst['torchcodec'] or 'no (pyav)'}",
              "installed and importable")
