@@ -106,37 +106,27 @@ class FloorTests(unittest.TestCase):
 class LadderTests(unittest.TestCase):
     W = {"L3": {"params": 450e6}, "L4": {"params": 3.0e9}, "L5": {"params": 3.6e9}}
 
-    def test_gated_blocks_pi_levels_only(self):
-        s = specs(nvidia=nvidia())
-        self.assertIsNone(doc.infer_precheck(L["L3"], {}, s, self.W, "no_token", False, "bfloat16"))
-        r = doc.infer_precheck(L["L5"], {}, s, self.W, "no_token", False, "bfloat16")
-        self.assertEqual((r["status"], r["evidence"]), ("BLOCKED_GATED", "not_run"))
-
-    def test_user_skip_pi(self):
-        r = doc.infer_precheck(L["L4"], {}, specs(), self.W, "ok", True, "float32")
-        self.assertEqual(r["status"], "NOT_RUN")
-
     def test_weights_floor_skips_only_that_level(self):
         s = specs(nvidia=nvidia(vram=4.0))
-        self.assertIsNone(doc.infer_precheck(L["L3"], {}, s, self.W, "ok", False, "bfloat16"))
-        r = doc.infer_precheck(L["L5"], {}, s, self.W, "ok", False, "bfloat16")
+        self.assertIsNone(doc.infer_precheck(L["L3"], {}, s, self.W, "bfloat16"))
+        r = doc.infer_precheck(L["L5"], {}, s, self.W, "bfloat16")
         self.assertEqual((r["status"], r["evidence"], r["reason"]), ("SKIPPED_FLOOR", "floor", "weights_exceed_memory"))
 
     def test_oom_is_memory_monotonic(self):
         s = specs(nvidia=nvidia(vram=16.0))
         results = {"L4": {"infer": {"status": "FAIL_OOM", "dtype": "bfloat16"}}}
-        r = doc.infer_precheck(L["L5"], results, s, self.W, "ok", False, "bfloat16")
+        r = doc.infer_precheck(L["L5"], results, s, self.W, "bfloat16")
         self.assertEqual((r["status"], r["reason"]), ("SKIPPED_FLOOR", "smaller_level_oom:L4"))
 
     def test_too_slow_never_skips_the_next_level(self):
         s = specs()  # cpu
         results = {"L3": {"infer": {"status": "TOO_SLOW"}}, "L4": {"infer": {"status": "TIMEOUT"}}}
-        self.assertIsNone(doc.infer_precheck(L["L5"], results, s, self.W, "ok", False, "float32"))
+        self.assertIsNone(doc.infer_precheck(L["L5"], results, s, self.W, "float32"))
 
     def test_crash_or_download_never_skips(self):
         s = specs(nvidia=nvidia())
         results = {"L3": {"infer": {"status": "FAIL_CRASH"}}, "L4": {"infer": {"status": "FAIL_DOWNLOAD"}}}
-        self.assertIsNone(doc.infer_precheck(L["L5"], results, s, self.W, "ok", False, "bfloat16"))
+        self.assertIsNone(doc.infer_precheck(L["L5"], results, s, self.W, "bfloat16"))
 
     def test_train_requires_forward_to_fit(self):
         r = doc.train_precheck(L["L5"], {"L5": {"infer": {"status": "FAIL_OOM"}}})
@@ -149,7 +139,7 @@ class LadderTests(unittest.TestCase):
         self.assertIsNone(doc.train_precheck(L["L3"], {"L3": {"infer": {"status": "MARGINAL", "params": 450e6}}}))
 
     def test_train_inherits_not_run(self):
-        r = doc.train_precheck(L["L4"], {"L4": {"infer": {"status": "BLOCKED_GATED", "zh": "x", "en": "y"}}})
+        r = doc.train_precheck(L["L4"], {"L4": {"infer": {"status": "FAIL_DOWNLOAD", "zh": "x", "en": "y"}}})
         self.assertEqual((r["status"], r["evidence"]), ("NOT_RUN", "not_run"))
 
     def test_train_oom_is_monotonic(self):
@@ -175,6 +165,9 @@ class ClassifyExitTests(unittest.TestCase):
 
     def test_network(self):
         self.assertEqual(doc.classify_exit(1, "requests.exceptions.ConnectionError: Max retries exceeded"), "FAIL_DOWNLOAD")
+
+    def test_xet_download_error_is_network(self):
+        self.assertEqual(doc.classify_exit(1, "RuntimeError: Task error: File reconstruction error: CAS Client Error: Format error: I/O error: error decoding response body"), "FAIL_DOWNLOAD")
 
     def test_unknown_is_crash(self):
         self.assertEqual(doc.classify_exit(1, "KeyError: 'observation.images.up'"), "FAIL_CRASH")

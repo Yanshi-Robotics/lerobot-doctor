@@ -44,11 +44,11 @@ TOOL_VERSION = "0.1.0"
 LEROBOT_VERSION = "0.6.1"
 PYTHON_VERSION = "3.12"                         # lerobot 0.6.1: Requires-Python >=3.12
 VISER_SPEC = "viser[urdf]==1.1.0"               # same pin as the Season-1 course repo
-LEROBOT_EXTRAS = "smolvla,pi,diffusion,dataset,feetech,accelerate-dep"
+LEROBOT_EXTRAS = "smolvla,xvla,wallx,diffusion,dataset,feetech,accelerate-dep"
 WORK_DIR = Path.home() / "lerobot-doctor"
 DEFAULT_PORT = 4604                             # yanshirobotics 46xx range; 127.0.0.1 only
 
-MIN_FREE_DISK_GB = 30      # venv ~7 GB + four checkpoints ~15 GB + dataset + headroom
+MIN_FREE_DISK_GB = 30      # venv ~7.5 GB + three checkpoints ~13 GB + dataset + headroom
 MIN_RAM_GB = 8             # below this torch import + any model load fails
 MIN_NVIDIA_DRIVER = (570, 86)   # PyTorch cu128 wheel driver floor
 TORCH_BACKEND_NVIDIA = "cu128"  # covers Ampere..Blackwell on driver >= 570.86
@@ -89,7 +89,6 @@ HF_HTTP_ATTEMPTS = 2
 DATASET_REPO = "lerobot/svla_so101_pickplace"   # official SO-101 pick-place recording, v3.0
 DATASET_EPISODES = [0, 1, 2, 3, 4]
 DEMO_EPISODE = 0
-GATED_TOKENIZER_REPO = "google/paligemma-3b-pt-224"   # gated=manual; pi0/pi05/pi0_fast tokenizers
 HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
 
 URDF_REPO = "TheRobotStudio/SO-ARM100"
@@ -110,27 +109,30 @@ ESTIMATE_VRAM_GB = {"Light BC": (2, 6), "Diffusion": (8, 14), "Small VLA": (10, 
 
 
 class Level:
-    def __init__(self, lid, policy, group, source, extra, batches, gated=False, label=None):
+    def __init__(self, lid, policy, group, source, weights, extra, batches, large=False, label=None):
         self.id = lid
         self.policy = policy
         self.group = group
-        self.source = source          # HF repo of the pretrained checkpoint, or None (from scratch)
+        self.source = source          # lerobot-format checkpoint loaded with from_pretrained, or None (built from config)
+        self.weights = weights        # HF repo whose size/params drive downloads and the weight floor, or None (from scratch)
         self.extra = extra
         self.batches = batches
-        self.gated = gated
+        self.large = large            # bfloat16 + gradient checkpointing where the policy config supports it
         self.label = label or policy
 
     @property
     def pretrained(self):
-        return self.source is not None
+        return self.weights is not None
 
 
+# One representative per HF hardware-guide group, all downloadable without a Hugging Face account
+# (the pi0 family needs Google's gated PaliGemma tokenizer, so it is deliberately not here).
 LEVELS = [
-    Level("L1", "act", "Light BC", None, None, [8, 4], label="ACT"),
-    Level("L2", "diffusion", "Diffusion", None, "diffusion", [8, 4, 2], label="Diffusion"),
-    Level("L3", "smolvla", "Small VLA", "lerobot/smolvla_base", "smolvla", [8, 4, 2, 1], label="SmolVLA"),
-    Level("L4", "pi0_fast", "Large VLA", "lerobot/pi0fast_base", "pi", [4, 2, 1], gated=True, label="π0-FAST"),
-    Level("L5", "pi05", "Large VLA", "lerobot/pi05_base", "pi", [4, 2, 1], gated=True, label="π0.5"),
+    Level("L1", "act", "Light BC", None, None, None, [8, 4], label="ACT"),
+    Level("L2", "diffusion", "Diffusion", None, None, "diffusion", [8, 4, 2], label="Diffusion"),
+    Level("L3", "smolvla", "Small VLA", "lerobot/smolvla_base", "lerobot/smolvla_base", "smolvla", [8, 4, 2, 1], label="SmolVLA"),
+    Level("L4", "xvla", "Large VLA", "lerobot/xvla-base", "lerobot/xvla-base", "xvla", [8, 4, 2, 1], large=True, label="X-VLA"),
+    Level("L5", "wall_x", "Large VLA", None, "x-square-robot/wall-oss-flow", "wallx", [4, 2, 1], large=True, label="WALL-OSS"),
 ]
 LEVEL_BY_ID = {lv.id: lv for lv in LEVELS}
 
@@ -379,7 +381,6 @@ def collect_specs() -> dict:
         "accelerator": "cpu",       # cuda | mps | cpu
         "device_mem_gb": None,      # VRAM (cuda), unified memory (mps), RAM (cpu)
         "bf16": False,
-        "hf_token": (Path.home() / ".cache" / "huggingface" / "token").exists() or bool(os.environ.get("HF_TOKEN")),
     }
     if system == "Linux":
         specs["os"] = parse_os_release(_read("/etc/os-release")) or f"Linux {platform.release()}"
@@ -486,8 +487,8 @@ def hard_floors(specs: dict) -> list[dict]:
     floors = []
     if specs.get("disk_free_gb") is not None and specs["disk_free_gb"] < MIN_FREE_DISK_GB:
         floors.append({"key": "disk", "have": specs["disk_free_gb"], "need": MIN_FREE_DISK_GB,
-                       "zh": f"磁盘剩余 {specs['disk_free_gb']} GB < 需要 {MIN_FREE_DISK_GB} GB（环境约 7 GB + 权重约 15 GB + 数据与余量）。清出空间后重跑。",
-                       "en": f"Free disk {specs['disk_free_gb']} GB < required {MIN_FREE_DISK_GB} GB (env ~7 GB + weights ~15 GB + data + headroom). Free space and rerun."})
+                       "zh": f"磁盘剩余 {specs['disk_free_gb']} GB < 需要 {MIN_FREE_DISK_GB} GB（环境约 7 GB + 权重约 13 GB + 数据与余量）。清出空间后重跑。",
+                       "en": f"Free disk {specs['disk_free_gb']} GB < required {MIN_FREE_DISK_GB} GB (env ~7 GB + weights ~13 GB + data + headroom). Free space and rerun."})
     if specs.get("ram_gb") is not None and specs["ram_gb"] < MIN_RAM_GB:
         floors.append({"key": "ram", "have": specs["ram_gb"], "need": MIN_RAM_GB,
                        "zh": f"内存 {specs['ram_gb']} GB < 需要 {MIN_RAM_GB} GB。PyTorch 本身加任何一个模型都装不进去。",
@@ -569,26 +570,6 @@ def hf_model_summary(repo: str) -> dict | None:
     return {"repo": repo, "params": params, "bytes": size, "gated": info.get("gated", False)}
 
 
-def hf_gated_access(repo: str = GATED_TOKENIZER_REPO) -> str:
-    """'ok' | 'no_token' | 'no_access' | 'network'."""
-    req = urllib.request.Request(f"{HF_ENDPOINT}/{repo}/resolve/main/tokenizer_config.json", method="HEAD",
-                                 headers={"User-Agent": f"lerobot-doctor/{TOOL_VERSION}"})
-    tok = hf_token()
-    if tok:
-        req.add_header("Authorization", f"Bearer {tok}")
-    for _ in range(HF_HTTP_ATTEMPTS):
-        try:
-            with urllib.request.urlopen(req, timeout=HF_HTTP_TIMEOUT_S):
-                return "ok"
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                return "no_access" if tok else "no_token"
-            return "network"
-        except (urllib.error.URLError, TimeoutError, OSError):
-            continue
-    return "network"
-
-
 # ----------------------------------------------------------------------------------------------
 # Stage A printing.
 # ----------------------------------------------------------------------------------------------
@@ -614,7 +595,6 @@ def print_specs(con: Console, specs: dict):
                 "mps": f"Apple MPS ({specs['device_mem_gb']} GB unified memory)",
                 "cpu": "CPU only"}[acc]
     rows.append(("测试用设备 Device for tests", acc_text))
-    rows.append(("HF 登录 HF login", "token found" if specs["hf_token"] else "no token"))
     width = max(dwidth(r[0]) for r in rows)
     for k, v in rows:
         con.line(f"  {pad(k, width)}  {v}")
@@ -787,18 +767,8 @@ print(json.dumps(out))
 # Ladder state machine (pure functions; unit-tested).
 # ----------------------------------------------------------------------------------------------
 
-def infer_precheck(level: Level, results: dict, specs: dict, weights: dict, gated: str, skip_pi: bool,
-                   dtype: str) -> dict | None:
+def infer_precheck(level: Level, results: dict, specs: dict, weights: dict, dtype: str) -> dict | None:
     """Decide whether to *skip* the inference probe. Returns a result dict or None (= run it)."""
-    if level.gated and skip_pi:
-        return {"status": "NOT_RUN", "evidence": "not_run", "reason": "user_skipped_pi",
-                "zh": "用户选择跳过 π0 系", "en": "user chose to skip the pi0 family"}
-    if level.gated and gated != "ok":
-        why = {"no_token": ("未登录 Hugging Face", "not logged in to Hugging Face"),
-               "no_access": ("HF 账号还没同意 PaliGemma 许可", "HF account has not accepted the PaliGemma license"),
-               "network": ("连不上 Hugging Face", "cannot reach Hugging Face")}[gated]
-        return {"status": "BLOCKED_GATED" if gated != "network" else "FAIL_DOWNLOAD", "evidence": "not_run",
-                "reason": gated, "zh": why[0], "en": why[1]}
     # floor 1: weights alone do not fit
     w = weights.get(level.id) or {}
     fl = weight_floor(level, w.get("params"), dtype, specs.get("device_mem_gb"))
@@ -850,7 +820,9 @@ def classify_exit(returncode: int, log_text: str) -> str:
         return "FAIL_DEP"
     if "gated" in low or "401 client error" in low or "403 client error" in low:
         return "BLOCKED_GATED"
-    if any(k in low for k in ("connectionerror", "max retries", "name resolution", "timed out", "httperror", "couldn't connect")):
+    if any(k in low for k in ("connectionerror", "max retries", "name resolution", "timed out", "httperror", "couldn't connect",
+                              "cas client error", "reconstruction error", "decoding response body", "incompleteread",
+                              "readtimeout", "chunkedencodingerror", "remote end closed")):
         return "FAIL_DOWNLOAD"
     return "FAIL_CRASH"
 
@@ -901,7 +873,7 @@ def infer_verdict(level: Level, r: dict) -> dict:
     if st == "SKIPPED_FLOOR":
         return {"mark": "bad", "evidence": "floor", "zh": f"本地装不下：{r.get('zh', '')}", "en": f"does not fit locally: {r.get('en', '')}"}
     reasons = {
-        "BLOCKED_GATED": ("未测：先到 HF 同意 PaliGemma 许可并登录，再重跑", "not tested: accept the PaliGemma license on HF, log in, rerun"),
+        "BLOCKED_GATED": ("未测：这个模型的仓库要先在 Hugging Face 上同意许可并登录", "not tested: this model's repo needs a Hugging Face login and license acceptance"),
         "FAIL_DEP": ("未测：依赖没装上（见日志）", "not tested: a dependency is missing (see log)"),
         "FAIL_DOWNLOAD": ("未测：下载失败（网络）", "not tested: download failed (network)"),
         "TIMEOUT": ("未测：预算时间内没跑完（磁盘或网络极慢），见日志", "not tested: did not finish within budget (very slow disk or network), see log"),
@@ -1057,12 +1029,6 @@ def render_report(con: Console, report: dict, verdicts: dict):
     con.line(bi("SO-101 路线", "SO-101 route") + f" [{r['rule']}]")
     con.line(f"  {r['zh']}")
     con.line(f"  {r['en']}")
-    if any((report.get("levels", {}).get(l.id, {}).get("infer") or {}).get("status") == "BLOCKED_GATED" for l in LEVELS):
-        con.line("")
-        con.line(bi("解锁 π0 系的三步", "Three steps to unlock the pi0 family"))
-        con.line(f"  1. {HF_ENDPOINT}/{GATED_TOKENIZER_REPO}  {bi('同意许可', 'accept the license')}")
-        con.line(f"  2. hf auth login   {bi('（在 ~/lerobot-doctor/.venv 里或任何装了 huggingface_hub 的环境）', '(inside ~/lerobot-doctor/.venv or any env with huggingface_hub)')}")
-        con.line(f"  3. {bi('重跑本工具（已下载的东西不重下）', 'rerun this tool (nothing already downloaded is fetched again)')}")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1160,42 +1126,6 @@ def run_worker(py: Path, con: Console, log_path: Path, worker_args: list[str], b
             "returncode": rc, "seconds": seconds, "log": str(log_path), "error": err, **{k: v for k, v in result_holder.items() if k != "status"}}
 
 
-def hf_login(py: Path, token: str) -> None:
-    subprocess.run([str(py), "-c", "import sys;from huggingface_hub import login;login(token=sys.argv[1], add_to_git_credential=False)", token],
-                   capture_output=True)
-
-
-def ask_for_gated_access(con: Console, py: Path, gated: str) -> str:
-    """Interactive: token or license acceptance for the PaliGemma tokenizer. Enter = skip the pi0 levels."""
-    for _ in range(2):
-        con.line("")
-        if gated == "no_token":
-            con.line(bi(f"π0-FAST / π0.5 需要 Hugging Face 账号，并在 {HF_ENDPOINT}/{GATED_TOKENIZER_REPO} 同意许可。",
-                        f"pi0-FAST / pi0.5 need a Hugging Face account that accepted the license at {HF_ENDPOINT}/{GATED_TOKENIZER_REPO}."))
-            con.line(bi("粘贴你的 HF token 后回车继续；直接回车 = 跳过这两级。", "Paste your HF token and press Enter; empty = skip those two levels."))
-            try:
-                tok = input("HF token: ").strip()
-            except EOFError:
-                tok = ""
-            if not tok:
-                return gated
-            hf_login(py, tok)
-        else:
-            con.line(bi(f"你的 HF 账号还没同意 PaliGemma 许可：打开 {HF_ENDPOINT}/{GATED_TOKENIZER_REPO}，点同意，再回来按回车重查；输入 s 回车 = 跳过。",
-                        f"Your HF account has not accepted the PaliGemma license: open {HF_ENDPOINT}/{GATED_TOKENIZER_REPO}, accept, come back and press Enter to recheck; type s + Enter to skip."))
-            try:
-                ans = input("> ").strip().lower()
-            except EOFError:
-                ans = "s"
-            if ans == "s":
-                return gated
-        gated = hf_gated_access()
-        if gated == "ok":
-            con.item("ok", "π0 系权重可以下载了", "pi0 family weights are accessible now")
-            return gated
-    return gated
-
-
 def orchestrate(args, con: Console, py: Path, report: Report) -> None:
     data = report.data
     specs = data["specs"]
@@ -1231,20 +1161,13 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
             con.item("warn", f"3D 页面没起来（{type(e).__name__}: {str(e)[:120]}），探针照跑", f"3D page failed ({type(e).__name__}); probes continue")
             sim = None
 
-    # ---- weights + gated ----------------------------------------------------------------------
+    # ---- weights ------------------------------------------------------------------------------
     con.activity(bi("查询模型大小", "querying model sizes"))
     weights = {}
     for lv in LEVELS:
         if lv.pretrained:
-            weights[lv.id] = hf_model_summary(lv.source) or {}
+            weights[lv.id] = hf_model_summary(lv.weights) or {}
     data["weights"] = weights
-    gated = hf_gated_access()
-    if args.hf_token:
-        hf_login(py, args.hf_token)
-        gated = hf_gated_access()
-    if gated in ("no_token", "no_access") and not args.skip_pi and con.tty:
-        gated = ask_for_gated_access(con, py, gated)
-    data["gated"] = gated
     dtype = "bfloat16" if specs["bf16"] else "float32"
     device = args.device or specs["accelerator"]
     total_dl = sum((w.get("bytes") or 0) for lid, w in weights.items())
@@ -1253,6 +1176,9 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
     report.save()
 
     results = data.setdefault("levels", {})
+    selected = {x.strip().upper() for x in args.levels.split(",")} if args.levels else {lv.id for lv in LEVELS}
+    filtered = {"status": "NOT_RUN", "evidence": "not_run", "reason": "user_filtered",
+                "zh": "未测：这次运行没有选它（--levels）", "en": "not tested: not selected for this run (--levels)"}
 
     def joints_cb(payload):
         if sim:
@@ -1262,7 +1188,8 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
     for lv in LEVELS:
         next_step(f"{lv.label} 推理 + 模拟执行", f"{lv.label} inference + simulated task", "1–10 min")
         results.setdefault(lv.id, {})
-        pre = infer_precheck(lv, results, specs, weights, gated, args.skip_pi, dtype)
+        pre = None if lv.id in selected else dict(filtered)
+        pre = pre or infer_precheck(lv, results, specs, weights, dtype)
         if pre:
             results[lv.id]["infer"] = pre
             con.item("skip" if pre["evidence"] == "not_run" else "bad", pre["zh"], pre["en"])
@@ -1288,7 +1215,8 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
     # ---- training ladder --------------------------------------------------------------------
     for lv in LEVELS:
         next_step(f"{lv.label} 训练", f"{lv.label} training", "2–15 min")
-        pre = train_precheck(lv, results)
+        pre = None if lv.id in selected else dict(filtered)
+        pre = pre or train_precheck(lv, results)
         if pre:
             results[lv.id]["train"] = pre
             con.item("skip" if pre["evidence"] == "not_run" else "bad", pre["zh"], pre["en"])
@@ -1300,7 +1228,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
             wargs += ["--vram-cap", str(args.vram_cap)]
         budget = TRAIN_L1_BUDGET_S if lv.id == "L1" else TRAIN_BUDGET_S
         if lv.id == "L1" and sim:
-            sim.begin_level(lv.label + " (trained " + str(ACT_DEMO_STEPS) + " steps)")
+            sim.begin_level(lv.label + " " + bi("（训练后）", "(after training)"))
         r = run_worker(py, con, logs / f"{lv.id}-train.log", wargs, budget, lv.label, on_joints=joints_cb)
         r["params"] = (weights.get(lv.id) or {}).get("params") or r.get("params")
         results[lv.id]["train"] = r
@@ -1351,8 +1279,14 @@ class SimPage:
         self.server = viser.ViserServer(host="127.0.0.1", port=port, label="LeRobot Doctor · SO-101", verbose=False)
         scene = self.server.scene
         scene.set_up_direction("+z")
-        scene.add_grid("/ground", width=1.2, height=1.2, plane="xy", cell_size=0.1)
+        scene.add_grid("/ground", width=0.8, height=0.8, plane="xy", cell_size=0.05)
         self.arm = ViserUrdf(self.server, urdf_path, root_node_name="/so101")
+
+        @self.server.on_client_connect
+        def _(client) -> None:   # the arm is 30 cm tall; viser's default camera sits metres away
+            client.camera.position = (0.55, -0.55, 0.40)
+            client.camera.look_at = (0.0, 0.0, 0.12)
+
         self.joint_names = list(self.arm.get_actuated_joint_names())
         self.limits = {name: (float(lo if lo is not None else -math.pi), float(hi if hi is not None else math.pi))
                        for name, (lo, hi) in self.arm.get_actuated_joint_limits().items()}
@@ -1367,7 +1301,7 @@ class SimPage:
             blank = np.zeros((120, 160, 3), dtype=np.uint8)
             self.img_up = gui.add_image(blank, label="up")
             self.img_side = gui.add_image(blank, label="side")
-        with gui.add_folder(bi("关节：模型输出 vs 录像里的真人", "Joints: model output vs human recording")):
+        with gui.add_folder(bi("关节 (度)：模型 / 真人", "Joints (deg): model / human")):
             self.plots = {}
             for name in ARM_JOINTS + (GRIPPER_JOINT,):
                 self.plots[name] = gui.add_text(name, initial_value="—", disabled=True)
@@ -1416,6 +1350,9 @@ class SimPage:
         self.hz_text.value = "—"
         self.lat_text.value = "—"
         self._frame_idx = 0
+        self._last_img = -1
+        for name in ARM_JOINTS + (GRIPPER_JOINT,):
+            self.plots[name].value = "—"
         self.home()
         threading.Thread(target=self._load_frames, daemon=True).start()
 
@@ -1551,9 +1488,9 @@ def build_level_config(level: Level, device, dtype: str, meta, for_training: boo
         cfg = PreTrainedConfig.from_pretrained(src)
         cfg.pretrained_path = src
         cfg.device = str(device)
-        if hasattr(cfg, "dtype") and level.gated:
+        if hasattr(cfg, "dtype") and level.large:
             cfg.dtype = dtype
-        if for_training and hasattr(cfg, "gradient_checkpointing") and level.gated:
+        if for_training and hasattr(cfg, "gradient_checkpointing") and level.large:
             cfg.gradient_checkpointing = True
         ckpt_cams = [k for k, f in cfg.input_features.items() if f.type is FeatureType.VISUAL]
         ds_cams = list(meta.camera_keys)
@@ -1563,6 +1500,10 @@ def build_level_config(level: Level, device, dtype: str, meta, for_training: boo
             emit("note", f"camera rename for {level.label}: {rename_map}")
     else:
         cfg = make_policy_config(level.policy, device=str(device))
+        if hasattr(cfg, "dtype") and level.large:
+            cfg.dtype = dtype
+        if for_training and hasattr(cfg, "gradient_checkpointing") and level.large:
+            cfg.gradient_checkpointing = True
     return cfg, rename_map
 
 
@@ -1915,11 +1856,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-install", action="store_true", help="reuse ~/lerobot-doctor/.venv as is")
     p.add_argument("--install-only", action="store_true", help="stop after the environment is built and importable")
     p.add_argument("--use-current-env", action="store_true", help="run the probes with the Python that runs this file")
-    p.add_argument("--skip-pi", action="store_true", help="skip the two gated pi0 levels")
-    p.add_argument("--hf-token", default=None, help="Hugging Face token (for the gated PaliGemma tokenizer)")
     p.add_argument("--device", choices=["cuda", "mps", "cpu"], default=None, help="override the test device")
     p.add_argument("--vram-cap", type=float, default=None, help="pretend the GPU has only this many GB (testing)")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help="3D page port (127.0.0.1 only)")
+    p.add_argument("--levels", default=None, help="comma-separated level ids to run, e.g. L1,L3 (others are reported as not tested)")
     p.add_argument("--no-sim", action="store_true", help="no 3D page")
     p.add_argument("--no-browser", action="store_true", help="do not open the browser automatically")
     p.add_argument("--ascii", action="store_true", help="ASCII markers instead of emoji")
@@ -1978,6 +1918,11 @@ def _main(args, con: Console) -> int:
         render_report(con, report.data, verdicts)
         con.line("")
         con.line(bi(f"报告已保存：{report.path}   求助时把这个文件发出来。", f"Report saved: {report.path}   Share this file when asking for help."))
+        if con.tty and not args.no_sim:
+            try:   # keep the 3D page alive until the user has looked at everything
+                input(bi("回车退出（浏览器里的 3D 页面随之关闭）", "Enter to exit (the 3D page closes with it)") + " > ")
+            except EOFError:
+                pass
         return 0
 
     # ---- stage 1 ------------------------------------------------------------------------------
@@ -2013,8 +1958,8 @@ def _main(args, con: Console) -> int:
 
     # ---- confirm ------------------------------------------------------------------------------
     con.step(2, total_steps, "确认", "confirm")
-    con.line(bi("接下来会：建一个独立的 Python 环境（约 7 GB）→ 装 LeRobot 0.6.1 → 下载样例数据与四个模型（约 15 GB）→ 逐个真跑。",
-                "Next: create a private Python env (~7 GB) -> install LeRobot 0.6.1 -> download sample data and four models (~15 GB) -> run each for real."))
+    con.line(bi("接下来会：建一个独立的 Python 环境（约 7 GB）→ 装 LeRobot 0.6.1 → 下载样例数据与三个预训练模型（约 13 GB）→ 五个策略逐个真跑。",
+                "Next: create a private Python env (~7 GB) -> install LeRobot 0.6.1 -> download sample data and three pretrained models (~13 GB) -> run five policies for real."))
     con.line(bi("全程 30–90 分钟，取决于网速与机器。中途 Ctrl-C 可停，已完成部分会保留。",
                 "30-90 minutes depending on network and machine. Ctrl-C stops; finished parts are kept."))
     if not args.yes and con.tty:
@@ -2067,16 +2012,16 @@ def _main(args, con: Console) -> int:
 
     # ---- hand over to the venv ----------------------------------------------------------------
     handover = [str(py), str(Path(__file__).resolve()), "--orchestrate", str(report_path)]
-    for flag in ("--skip-pi", "--no-sim", "--no-browser", "--ascii", "--yes"):
+    for flag in ("--no-sim", "--no-browser", "--ascii", "--yes"):
         if getattr(args, flag[2:].replace("-", "_")):
             handover.append(flag)
-    if args.hf_token:
-        handover += ["--hf-token", args.hf_token]
     if args.device:
         handover += ["--device", args.device]
     if args.vram_cap:
         handover += ["--vram-cap", str(args.vram_cap)]
     handover += ["--port", str(args.port)]
+    if args.levels:
+        handover += ["--levels", args.levels]
     return subprocess.call(handover, env=child_env())
 
 
