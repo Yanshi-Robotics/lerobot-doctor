@@ -91,16 +91,17 @@ class FloorTests(unittest.TestCase):
         self.assertEqual(doc.hard_floors(specs(system="Windows", windows_release="7"))[0]["key"], "windows")
         self.assertEqual(doc.hard_floors(specs(system="Windows", windows_release="11")), [])
 
-    def test_weight_floor_arithmetic(self):
-        fl = doc.weight_floor(L["L5"], params=3_600_000_000, dtype="bfloat16", device_mem_gb=4.0)
-        self.assertEqual(fl["need_gb"], 7.2)
-        self.assertIn("7.2 GB", fl["zh"])
-        self.assertIsNone(doc.weight_floor(L["L5"], 3_600_000_000, "bfloat16", 16.0))
+    def test_weight_floor_uses_the_load_dtype(self):
+        # lerobot materialises every checkpoint in float32 before casting, so 4.2B params need 16.9 GB
+        fl = doc.weight_floor(L["L5"], params=4_224_041_072, dtype="bfloat16", device_mem_gb=15.9)
+        self.assertEqual(fl["need_gb"], 16.9)
+        self.assertIn("16.9 GB", fl["zh"])
+        self.assertIsNone(doc.weight_floor(L["L5"], 4_224_041_072, "bfloat16", 24.0, ram_gb=64.0))
         self.assertIsNone(doc.weight_floor(L["L1"], None, "float32", 16.0))
 
-    def test_float32_doubles_the_floor(self):
-        self.assertIsNotNone(doc.weight_floor(L["L5"], 3_600_000_000, "float32", 12.0))
-        self.assertIsNone(doc.weight_floor(L["L5"], 3_600_000_000, "bfloat16", 12.0))
+    def test_weight_floor_checks_ram_too(self):
+        fl = doc.weight_floor(L["L5"], 4_224_041_072, "bfloat16", 24.0, ram_gb=16.0)
+        self.assertIn("RAM", fl["en"])
 
 
 class LadderTests(unittest.TestCase):
@@ -108,6 +109,7 @@ class LadderTests(unittest.TestCase):
 
     def test_weights_floor_skips_only_that_level(self):
         s = specs(nvidia=nvidia(vram=4.0))
+        self.W = {"L3": {"params": 450e6}, "L4": {"params": 0.88e9}, "L5": {"params": 4.2e9}}
         self.assertIsNone(doc.infer_precheck(L["L3"], {}, s, self.W, "bfloat16"))
         r = doc.infer_precheck(L["L5"], {}, s, self.W, "bfloat16")
         self.assertEqual((r["status"], r["evidence"], r["reason"]), ("SKIPPED_FLOOR", "floor", "weights_exceed_memory"))

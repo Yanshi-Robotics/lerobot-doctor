@@ -2,7 +2,7 @@
   "schema": 1,
   "tool_version": "0.1.0",
   "lerobot_version": "0.6.1",
-  "started_at": "2026-09-19T07:14:49",
+  "started_at": "2026-09-19T09:42:46",
   "specs": {
     "system": "Linux",
     "os": "Ubuntu 24.04.4 LTS",
@@ -13,7 +13,7 @@
     "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
     "cpu_count": 16,
     "ram_gb": 49.6,
-    "disk_free_gb": 906.4,
+    "disk_free_gb": 890.2,
     "python": "3.12.3",
     "ffmpeg": true,
     "nvidia": [
@@ -30,7 +30,6 @@
     "accelerator": "cuda",
     "device_mem_gb": 15.9,
     "bf16": true,
-    "hf_token": true,
     "glibc": "glibc 2.39",
     "torch_backend": "cu128",
     "accelerator_note": ""
@@ -96,12 +95,12 @@
         "status": "PASS",
         "evidence": "measured",
         "params": 51597190,
-        "load_s": 0.8,
+        "load_s": 0.9,
         "n_action_steps": 100,
         "device": "cuda",
         "dtype": "bfloat16",
-        "latency_ms": 8.0,
-        "p95_ms": 9.9,
+        "latency_ms": 7.5,
+        "p95_ms": 8.3,
         "budget_ms": 3333,
         "timed_calls": 20,
         "peak_gb": 0.29,
@@ -110,16 +109,16 @@
           "steps": 300,
           "seconds": 10.0,
           "hz": 29.9,
-          "mean_abs_err_deg": 21.6
+          "mean_abs_err_deg": 25.76
         },
-        "seconds": 14.4,
+        "seconds": 14.6,
         "log": "/home/jeff/lerobot-doctor/logs/L1-infer.log",
         "demo_after_training": {
           "status": "PASS",
           "steps": 300,
           "seconds": 10.0,
-          "hz": 30.0,
-          "mean_abs_err_deg": 6.4,
+          "hz": 29.9,
+          "mean_abs_err_deg": 10.47,
           "trained_steps": 313
         }
       },
@@ -131,24 +130,24 @@
         "attempts": [
           {
             "batch": 8,
-            "update_s": 0.119,
+            "update_s": 0.12,
             "peak_gb": 3.95,
-            "loss": 28.9341
+            "loss": 30.8753
           }
         ],
         "params": 51597190,
         "batch": 8,
-        "update_s": 0.119,
+        "update_s": 0.12,
         "peak_gb": 3.95,
         "demo": {
           "status": "PASS",
           "steps": 300,
           "seconds": 10.0,
-          "hz": 30.0,
-          "mean_abs_err_deg": 6.4,
+          "hz": 29.9,
+          "mean_abs_err_deg": 10.47,
           "trained_steps": 313
         },
-        "seconds": 70.4,
+        "seconds": 73.9,
         "log": "/home/jeff/lerobot-doctor/logs/L1-train.log",
         "hours": 0.9
       }
@@ -162,8 +161,8 @@
         "n_action_steps": 32,
         "device": "cuda",
         "dtype": "bfloat16",
-        "latency_ms": 672.4,
-        "p95_ms": 680.5,
+        "latency_ms": 666.4,
+        "p95_ms": 678.6,
         "budget_ms": 1067,
         "timed_calls": 20,
         "peak_gb": 1.26,
@@ -171,10 +170,10 @@
           "status": "PASS",
           "steps": 300,
           "seconds": 16.5,
-          "hz": 18.1,
-          "mean_abs_err_deg": 39.65
+          "hz": 18.2,
+          "mean_abs_err_deg": 42.5
         },
-        "seconds": 36.2,
+        "seconds": 36.1,
         "log": "/home/jeff/lerobot-doctor/logs/L2-infer.log"
       },
       "train": {
@@ -185,16 +184,16 @@
         "attempts": [
           {
             "batch": 8,
-            "update_s": 0.195,
+            "update_s": 0.192,
             "peak_gb": 8.96,
-            "loss": 1.1217
+            "loss": 1.0634
           }
         ],
         "params": 277819846,
         "batch": 8,
-        "update_s": 0.195,
+        "update_s": 0.192,
         "peak_gb": 8.96,
-        "seconds": 8.0,
+        "seconds": 8.1,
         "log": "/home/jeff/lerobot-doctor/logs/L2-train.log",
         "hours": 1.5
       }
@@ -204,23 +203,23 @@
         "status": "PASS",
         "evidence": "measured",
         "params": 450046176,
-        "load_s": 34.0,
+        "load_s": 47.5,
         "n_action_steps": 50,
         "device": "cuda",
         "dtype": "bfloat16",
-        "latency_ms": 79.4,
-        "p95_ms": 82.9,
+        "latency_ms": 78.9,
+        "p95_ms": 83.3,
         "budget_ms": 1667,
         "timed_calls": 20,
         "peak_gb": 0.97,
         "demo": {
           "status": "PASS",
           "steps": 300,
-          "seconds": 10.5,
-          "hz": 28.6,
-          "mean_abs_err_deg": 52.52
+          "seconds": 10.7,
+          "hz": 28.1,
+          "mean_abs_err_deg": 52.59
         },
-        "seconds": 49.6,
+        "seconds": 63.3,
         "log": "/home/jeff/lerobot-doctor/logs/L3-infer.log"
       },
       "train": {
@@ -231,54 +230,91 @@
         "attempts": [
           {
             "batch": 8,
-            "update_s": 0.13,
+            "update_s": 0.128,
             "peak_gb": 3.17,
-            "loss": 0.8508
+            "loss": 0.8098
           }
         ],
         "params": 450046176,
         "batch": 8,
-        "update_s": 0.13,
+        "update_s": 0.128,
         "peak_gb": 3.17,
-        "seconds": 61.6,
+        "seconds": 48.7,
         "log": "/home/jeff/lerobot-doctor/logs/L3-train.log",
         "hours": 1.0
       }
     },
     "L4": {
       "infer": {
-        "status": "NOT_RUN",
-        "evidence": "not_run",
-        "reason": "user_skipped_pi",
-        "zh": "用户选择跳过 π0 系",
-        "en": "user chose to skip the pi0 family"
+        "status": "PASS",
+        "evidence": "measured",
+        "params": 879738545,
+        "load_s": 13.8,
+        "n_action_steps": 30,
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "latency_ms": 65.0,
+        "p95_ms": 65.9,
+        "budget_ms": 1000,
+        "timed_calls": 20,
+        "peak_gb": 1.86,
+        "demo": {
+          "status": "PASS",
+          "steps": 300,
+          "seconds": 10.4,
+          "hz": 28.8,
+          "mean_abs_err_deg": 52.16
+        },
+        "seconds": 29.2,
+        "log": "/home/jeff/lerobot-doctor/logs/L4-infer.log"
       },
       "train": {
-        "status": "NOT_RUN",
-        "evidence": "not_run",
-        "reason": "infer_NOT_RUN",
-        "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
-        "en": "inference was not run (user chose to skip the pi0 family); same precondition"
+        "status": "PASS",
+        "evidence": "measured",
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "attempts": [
+          {
+            "batch": 8,
+            "status": "FAIL_OOM"
+          },
+          {
+            "batch": 4,
+            "update_s": 0.199,
+            "peak_gb": 9.05,
+            "loss": 509.6923
+          }
+        ],
+        "params": 879738545,
+        "batch": 4,
+        "update_s": 0.199,
+        "peak_gb": 9.05,
+        "seconds": 41.8,
+        "log": "/home/jeff/lerobot-doctor/logs/L4-train.log",
+        "hours": 3.1
       }
     },
     "L5": {
       "infer": {
-        "status": "NOT_RUN",
-        "evidence": "not_run",
-        "reason": "user_skipped_pi",
-        "zh": "用户选择跳过 π0 系",
-        "en": "user chose to skip the pi0 family"
+        "status": "SKIPPED_FLOOR",
+        "evidence": "floor",
+        "reason": "weights_exceed_memory",
+        "need_gb": 16.9,
+        "have_gb": 15.9,
+        "dtype": "float32",
+        "zh": "权重 16.9 GB（4.22B 参数 × float32，lerobot 加载时的精度）> 设备内存 15.9 GB",
+        "en": "weights 16.9 GB (4.22B params x float32, the dtype lerobot loads them in) > device memory 15.9 GB"
       },
       "train": {
-        "status": "NOT_RUN",
-        "evidence": "not_run",
-        "reason": "infer_NOT_RUN",
-        "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
-        "en": "inference was not run (user chose to skip the pi0 family); same precondition"
+        "status": "SKIPPED_FLOOR",
+        "evidence": "floor",
+        "reason": "infer_SKIPPED_FLOOR",
+        "zh": "前向都装不下，反向必然装不下",
+        "en": "the forward pass did not fit; the backward pass cannot"
       }
     }
   },
-  "seconds": 262,
+  "seconds": 329,
   "dataset": {
     "status": "PASS",
     "frames": 1197,
@@ -301,16 +337,20 @@
       "bytes": 914740972,
       "gated": false
     },
-    "L4": {},
+    "L4": {
+      "repo": "lerobot/xvla-base",
+      "params": 879738545,
+      "bytes": 3519087994,
+      "gated": false
+    },
     "L5": {
-      "repo": "lerobot/pi05_base",
-      "params": 3616757520,
-      "bytes": 14467176446,
+      "repo": "x-square-robot/wall-oss-flow",
+      "params": 4224041072,
+      "bytes": 8465083479,
       "gated": false
     }
   },
-  "gated": "no_access",
-  "finished_at": "2026-09-19T07:19:10",
+  "finished_at": "2026-09-19T09:48:14",
   "verdicts": {
     "install": "PASS",
     "levels": {
@@ -333,13 +373,13 @@
         "infer": {
           "mark": "warn",
           "evidence": "measured",
-          "zh": "本地可推理但接近上限（每块 672 ms，预算 1067 ms）；建议相机降到 320×240 或加长 chunk；模拟执行 10 s ✅，控制 18 Hz",
-          "en": "local inference works but near the limit (672 ms per chunk, budget 1067 ms); lower cameras to 320x240 or lengthen the chunk; simulated task 10 s OK at 18 Hz"
+          "zh": "本地可推理但接近上限（每块 666 ms，预算 1067 ms）；建议相机降到 320×240 或加长 chunk；模拟执行 10 s ✅，控制 18 Hz",
+          "en": "local inference works but near the limit (666 ms per chunk, budget 1067 ms); lower cameras to 320x240 or lengthen the chunk; simulated task 10 s OK at 18 Hz"
         },
         "train": {
           "mark": "ok",
-          "zh": "本地训练（batch 8，每步 0.20 s，参考任务约 1.5 小时）",
-          "en": "train locally (batch 8, 0.20 s per step, ~1.5 h for the reference task)",
+          "zh": "本地训练（batch 8，每步 0.19 s，参考任务约 1.5 小时）",
+          "en": "train locally (batch 8, 0.19 s per step, ~1.5 h for the reference task)",
           "cloud": false,
           "evidence": "measured"
         }
@@ -348,8 +388,8 @@
         "infer": {
           "mark": "ok",
           "evidence": "measured",
-          "zh": "本地实时推理（每块 79 ms，预算 1667 ms）；模拟执行 10 s ✅，控制 29 Hz",
-          "en": "real-time local inference (79 ms per chunk, budget 1667 ms); simulated task 10 s OK at 29 Hz"
+          "zh": "本地实时推理（每块 79 ms，预算 1667 ms）；模拟执行 10 s ✅，控制 28 Hz",
+          "en": "real-time local inference (79 ms per chunk, budget 1667 ms); simulated task 10 s OK at 28 Hz"
         },
         "train": {
           "mark": "ok",
@@ -361,32 +401,32 @@
       },
       "L4": {
         "infer": {
-          "mark": "skip",
-          "evidence": "not_run",
-          "zh": "用户选择跳过 π0 系",
-          "en": "user chose to skip the pi0 family"
+          "mark": "ok",
+          "evidence": "measured",
+          "zh": "本地实时推理（每块 65 ms，预算 1000 ms）；模拟执行 10 s ✅，控制 29 Hz",
+          "en": "real-time local inference (65 ms per chunk, budget 1000 ms); simulated task 10 s OK at 29 Hz"
         },
         "train": {
-          "mark": "skip",
-          "evidence": "not_run",
-          "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
-          "en": "inference was not run (user chose to skip the pi0 family); same precondition",
-          "cloud": null
+          "mark": "warn",
+          "zh": "本地可训练，过一夜（batch 4，每步 0.20 s，参考任务约 3.1 小时）",
+          "en": "trainable locally overnight (batch 4, 0.20 s per step, ~3.1 h for the reference task)",
+          "cloud": false,
+          "evidence": "measured"
         }
       },
       "L5": {
         "infer": {
-          "mark": "skip",
-          "evidence": "not_run",
-          "zh": "用户选择跳过 π0 系",
-          "en": "user chose to skip the pi0 family"
+          "mark": "bad",
+          "evidence": "floor",
+          "zh": "本地装不下：权重 16.9 GB（4.22B 参数 × float32，lerobot 加载时的精度）> 设备内存 15.9 GB",
+          "en": "does not fit locally: weights 16.9 GB (4.22B params x float32, the dtype lerobot loads them in) > device memory 15.9 GB"
         },
         "train": {
-          "mark": "skip",
-          "evidence": "not_run",
-          "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
-          "en": "inference was not run (user chose to skip the pi0 family); same precondition",
-          "cloud": null
+          "mark": "bad",
+          "evidence": "floor",
+          "cloud": true,
+          "zh": "本地训不了：前向都装不下，反向必然装不下",
+          "en": "cannot train locally: the forward pass did not fit; the backward pass cannot"
         }
       }
     },
@@ -395,9 +435,9 @@
     },
     "route": {
       "rule": "R1",
-      "level": "L3",
-      "zh": "全流程本地：录数据 → 本地训练 SmolVLA → 本地运行。",
-      "en": "Everything local: record data -> train SmolVLA locally -> run locally."
+      "level": "L4",
+      "zh": "全流程本地：录数据 → 本地训练 X-VLA → 本地运行。",
+      "en": "Everything local: record data -> train X-VLA locally -> run locally."
     },
     "notes": [
       [

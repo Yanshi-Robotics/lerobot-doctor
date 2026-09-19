@@ -109,7 +109,8 @@ ESTIMATE_VRAM_GB = {"Light BC": (2, 6), "Diffusion": (8, 14), "Small VLA": (10, 
 
 
 class Level:
-    def __init__(self, lid, policy, group, source, weights, extra, batches, large=False, label=None):
+    def __init__(self, lid, policy, group, source, weights, extra, batches, large=False, label=None,
+                 load_dtype="float32"):
         self.id = lid
         self.policy = policy
         self.group = group
@@ -118,6 +119,7 @@ class Level:
         self.extra = extra
         self.batches = batches
         self.large = large            # bfloat16 + gradient checkpointing where the policy config supports it
+        self.load_dtype = load_dtype  # dtype lerobot materialises the checkpoint in before any cast (fp32 for all three)
         self.label = label or policy
 
     @property
@@ -521,15 +523,19 @@ def estimate_table(specs: dict) -> dict:
     return out
 
 
-def weight_floor(level: Level, params: int | None, dtype: str, device_mem_gb: float | None) -> dict | None:
-    """Pure. The only per-level floor: the weights alone do not fit the device memory."""
-    if not params or not device_mem_gb:
+def weight_floor(level: Level, params: int | None, dtype: str, device_mem_gb: float | None,
+                 ram_gb: float | None = None) -> dict | None:
+    """Pure. The only per-level floor: the weights alone, at the dtype lerobot loads them in, do not
+    fit the device memory (or the RAM they pass through first)."""
+    if not params:
         return None
-    need_gb = params * BYTES_PER_PARAM[dtype] / 1e9
-    if need_gb > device_mem_gb:
-        return {"need_gb": round(need_gb, 1), "have_gb": device_mem_gb, "dtype": dtype,
-                "zh": f"权重 {need_gb:.1f} GB（{params/1e9:.2f}B 参数 × {dtype}）> 设备内存 {device_mem_gb} GB",
-                "en": f"weights {need_gb:.1f} GB ({params/1e9:.2f}B params x {dtype}) > device memory {device_mem_gb} GB"}
+    load_dtype = level.load_dtype or dtype
+    need_gb = params * BYTES_PER_PARAM[load_dtype] / 1e9
+    for what_zh, what_en, have in (("设备内存", "device memory", device_mem_gb), ("内存", "RAM", ram_gb)):
+        if have and need_gb > have:
+            return {"need_gb": round(need_gb, 1), "have_gb": have, "dtype": load_dtype,
+                    "zh": f"权重 {need_gb:.1f} GB（{params/1e9:.2f}B 参数 × {load_dtype}，lerobot 加载时的精度）> {what_zh} {have} GB",
+                    "en": f"weights {need_gb:.1f} GB ({params/1e9:.2f}B params x {load_dtype}, the dtype lerobot loads them in) > {what_en} {have} GB"}
     return None
 
 
@@ -771,7 +777,7 @@ def infer_precheck(level: Level, results: dict, specs: dict, weights: dict, dtyp
     """Decide whether to *skip* the inference probe. Returns a result dict or None (= run it)."""
     # floor 1: weights alone do not fit
     w = weights.get(level.id) or {}
-    fl = weight_floor(level, w.get("params"), dtype, specs.get("device_mem_gb"))
+    fl = weight_floor(level, w.get("params"), dtype, specs.get("device_mem_gb"), specs.get("ram_gb"))
     if fl:
         return {"status": "SKIPPED_FLOOR", "evidence": "floor", "reason": "weights_exceed_memory", **fl}
     # floor 2: memory monotonic - a smaller level already failed on memory (same device, same dtype)
@@ -1053,6 +1059,10 @@ def child_env() -> dict:
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
+    # Plain HTTP downloads. huggingface_hub's xet transfer depends on a separate CAS CDN that is slow
+    # or broken on some networks (measured here: ~1 MB/s and repeated CAS errors vs. full speed
+    # over HTTP). A diagnostic tool takes the path that works everywhere.
+    env.setdefault("HF_HUB_DISABLE_XET", "1")
     return env
 
 
@@ -1129,14 +1139,13 @@ def run_worker(py: Path, con: Console, log_path: Path, worker_args: list[str], b
 
 
 def run_worker_with_download_retry(py, con, log_path, wargs, budget, label, on_joints=None) -> dict:
-    """Hugging Face's xet transfer fails on some networks with CAS errors; one retry over plain
-    HTTP (HF_HUB_DISABLE_XET=1) resolves most of those before we call it a download failure."""
+    """One retry on a download failure: finished files stay in the Hugging Face cache, so a
+    second attempt only fetches what is missing."""
     r = run_worker(py, con, log_path, wargs, budget, label, on_joints=on_joints)
     if r.get("status") == "FAIL_DOWNLOAD":
-        con.item("warn", "下载中断，改用普通 HTTP 重试一次（已下好的部分保留）",
-                 "download interrupted; retrying once over plain HTTP (finished parts are kept)")
-        r = run_worker(py, con, log_path, wargs, budget, label, on_joints=on_joints, env_extra={"HF_HUB_DISABLE_XET": "1"})
-        r["retried_without_xet"] = True
+        con.item("warn", "下载中断，重试一次（已下好的部分保留）", "download interrupted; retrying once (finished parts are kept)")
+        r = run_worker(py, con, log_path, wargs, budget, label, on_joints=on_joints)
+        r["download_retried"] = True
     return r
 
 

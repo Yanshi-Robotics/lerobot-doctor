@@ -13,7 +13,7 @@ One command that tells you whether your computer can run LeRobot 0.6.1 for an SO
 
 People starting with LeRobot usually own an ordinary laptop or desktop and cannot tell in advance whether it will train an ACT policy overnight, run a vision-language-action model at 30 Hz, or do neither. `lerobot-info` prints versions, and the official hardware guide is a static table with a ±50 % error bar. LeRobot Doctor answers by doing the work for real: it builds its own environment, installs `lerobot==0.6.1`, and runs five representative policies on an official SO-101 recording, measuring inference latency, driving a 3D SO-101 in your browser for a ten-second task, and taking real training steps while stepping the batch size down until it fits.
 
-Every verdict carries its evidence. A "cannot" is printed only after a measured failure or an arithmetic floor such as `weights 8.4 GB > VRAM 4 GB`. Anything that could not be tested says so, with the reason.
+Every verdict carries its evidence. A "cannot" is printed only after a measured failure or an arithmetic floor such as `weights 16.9 GB > VRAM 15.9 GB`. Anything that could not be tested says so, with the reason.
 
 ![The 3D simulation page while a policy drives the SO-101](docs/images/sim-page.png)
 
