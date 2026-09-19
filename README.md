@@ -17,6 +17,8 @@ Every verdict carries its evidence. A "cannot" is printed only after a measured 
 
 ![The 3D simulation page while a policy drives the SO-101](docs/images/sim-page.png)
 
+![The final report, as printed in the terminal on an RTX 5070 Ti machine](docs/images/report.png)
+
 ## Quick start
 
 Copy one block (the copy button appears when you hover over it), paste it into a terminal, press Enter.
