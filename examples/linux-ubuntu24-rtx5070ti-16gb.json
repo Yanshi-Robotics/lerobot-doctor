@@ -1,0 +1,409 @@
+{
+  "schema": 1,
+  "tool_version": "0.1.0",
+  "lerobot_version": "0.6.1",
+  "started_at": "2026-09-19T07:14:49",
+  "specs": {
+    "system": "Linux",
+    "os": "Ubuntu 24.04.4 LTS",
+    "arch": "x86_64",
+    "kernel": "6.17.0-35-generic",
+    "wsl": false,
+    "rosetta": false,
+    "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+    "cpu_count": 16,
+    "ram_gb": 49.6,
+    "disk_free_gb": 906.4,
+    "python": "3.12.3",
+    "ffmpeg": true,
+    "nvidia": [
+      {
+        "name": "NVIDIA GeForce RTX 5070 Ti",
+        "vram_gb": 15.9,
+        "driver": "580.159.03",
+        "compute_cap": 12.0
+      }
+    ],
+    "other_gpus": [
+      "AMD"
+    ],
+    "accelerator": "cuda",
+    "device_mem_gb": 15.9,
+    "bf16": true,
+    "hf_token": true,
+    "glibc": "glibc 2.39",
+    "torch_backend": "cu128",
+    "accelerator_note": ""
+  },
+  "floors": [],
+  "estimate": {
+    "L1": {
+      "group": "Light BC",
+      "vram_bs8_gb": [
+        2,
+        6
+      ],
+      "train_estimate": "local"
+    },
+    "L2": {
+      "group": "Diffusion",
+      "vram_bs8_gb": [
+        8,
+        14
+      ],
+      "train_estimate": "local"
+    },
+    "L3": {
+      "group": "Small VLA",
+      "vram_bs8_gb": [
+        10,
+        16
+      ],
+      "train_estimate": "tight"
+    },
+    "L4": {
+      "group": "Large VLA",
+      "vram_bs8_gb": [
+        24,
+        40
+      ],
+      "train_estimate": "cloud"
+    },
+    "L5": {
+      "group": "Large VLA",
+      "vram_bs8_gb": [
+        24,
+        40
+      ],
+      "train_estimate": "cloud"
+    }
+  },
+  "install": {
+    "status": "PASS",
+    "reused": true,
+    "lerobot": "0.6.1",
+    "torch": "2.11.0+cu128",
+    "viser": "1.1.0",
+    "cuda": true,
+    "mps": false,
+    "cuda_version": "12.8",
+    "torchcodec": null,
+    "torchcodec_error": "Could not load libtorchcodec. Likely causes:\n          1. FFmpeg is not properly installed in your environment. We support\n             versions 4, 5, 6, 7, and 8, and we attempt to load libtorchcodec"
+  },
+  "levels": {
+    "L1": {
+      "infer": {
+        "status": "PASS",
+        "evidence": "measured",
+        "params": 51597190,
+        "load_s": 0.8,
+        "n_action_steps": 100,
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "latency_ms": 8.0,
+        "p95_ms": 9.9,
+        "budget_ms": 3333,
+        "timed_calls": 20,
+        "peak_gb": 0.29,
+        "demo": {
+          "status": "PASS",
+          "steps": 300,
+          "seconds": 10.0,
+          "hz": 29.9,
+          "mean_abs_err_deg": 21.6
+        },
+        "seconds": 14.4,
+        "log": "/home/jeff/lerobot-doctor/logs/L1-infer.log",
+        "demo_after_training": {
+          "status": "PASS",
+          "steps": 300,
+          "seconds": 10.0,
+          "hz": 30.0,
+          "mean_abs_err_deg": 6.4,
+          "trained_steps": 313
+        }
+      },
+      "train": {
+        "status": "PASS",
+        "evidence": "measured",
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "attempts": [
+          {
+            "batch": 8,
+            "update_s": 0.119,
+            "peak_gb": 3.95,
+            "loss": 28.9341
+          }
+        ],
+        "params": 51597190,
+        "batch": 8,
+        "update_s": 0.119,
+        "peak_gb": 3.95,
+        "demo": {
+          "status": "PASS",
+          "steps": 300,
+          "seconds": 10.0,
+          "hz": 30.0,
+          "mean_abs_err_deg": 6.4,
+          "trained_steps": 313
+        },
+        "seconds": 70.4,
+        "log": "/home/jeff/lerobot-doctor/logs/L1-train.log",
+        "hours": 0.9
+      }
+    },
+    "L2": {
+      "infer": {
+        "status": "MARGINAL",
+        "evidence": "measured",
+        "params": 277819846,
+        "load_s": 1.2,
+        "n_action_steps": 32,
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "latency_ms": 672.4,
+        "p95_ms": 680.5,
+        "budget_ms": 1067,
+        "timed_calls": 20,
+        "peak_gb": 1.26,
+        "demo": {
+          "status": "PASS",
+          "steps": 300,
+          "seconds": 16.5,
+          "hz": 18.1,
+          "mean_abs_err_deg": 39.65
+        },
+        "seconds": 36.2,
+        "log": "/home/jeff/lerobot-doctor/logs/L2-infer.log"
+      },
+      "train": {
+        "status": "PASS",
+        "evidence": "measured",
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "attempts": [
+          {
+            "batch": 8,
+            "update_s": 0.195,
+            "peak_gb": 8.96,
+            "loss": 1.1217
+          }
+        ],
+        "params": 277819846,
+        "batch": 8,
+        "update_s": 0.195,
+        "peak_gb": 8.96,
+        "seconds": 8.0,
+        "log": "/home/jeff/lerobot-doctor/logs/L2-train.log",
+        "hours": 1.5
+      }
+    },
+    "L3": {
+      "infer": {
+        "status": "PASS",
+        "evidence": "measured",
+        "params": 450046176,
+        "load_s": 34.0,
+        "n_action_steps": 50,
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "latency_ms": 79.4,
+        "p95_ms": 82.9,
+        "budget_ms": 1667,
+        "timed_calls": 20,
+        "peak_gb": 0.97,
+        "demo": {
+          "status": "PASS",
+          "steps": 300,
+          "seconds": 10.5,
+          "hz": 28.6,
+          "mean_abs_err_deg": 52.52
+        },
+        "seconds": 49.6,
+        "log": "/home/jeff/lerobot-doctor/logs/L3-infer.log"
+      },
+      "train": {
+        "status": "PASS",
+        "evidence": "measured",
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "attempts": [
+          {
+            "batch": 8,
+            "update_s": 0.13,
+            "peak_gb": 3.17,
+            "loss": 0.8508
+          }
+        ],
+        "params": 450046176,
+        "batch": 8,
+        "update_s": 0.13,
+        "peak_gb": 3.17,
+        "seconds": 61.6,
+        "log": "/home/jeff/lerobot-doctor/logs/L3-train.log",
+        "hours": 1.0
+      }
+    },
+    "L4": {
+      "infer": {
+        "status": "NOT_RUN",
+        "evidence": "not_run",
+        "reason": "user_skipped_pi",
+        "zh": "用户选择跳过 π0 系",
+        "en": "user chose to skip the pi0 family"
+      },
+      "train": {
+        "status": "NOT_RUN",
+        "evidence": "not_run",
+        "reason": "infer_NOT_RUN",
+        "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
+        "en": "inference was not run (user chose to skip the pi0 family); same precondition"
+      }
+    },
+    "L5": {
+      "infer": {
+        "status": "NOT_RUN",
+        "evidence": "not_run",
+        "reason": "user_skipped_pi",
+        "zh": "用户选择跳过 π0 系",
+        "en": "user chose to skip the pi0 family"
+      },
+      "train": {
+        "status": "NOT_RUN",
+        "evidence": "not_run",
+        "reason": "infer_NOT_RUN",
+        "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
+        "en": "inference was not run (user chose to skip the pi0 family); same precondition"
+      }
+    }
+  },
+  "seconds": 262,
+  "dataset": {
+    "status": "PASS",
+    "frames": 1197,
+    "episodes": 5,
+    "cameras": [
+      "observation.images.up",
+      "observation.images.side"
+    ],
+    "fps": 30,
+    "task": "pink lego brick into the transparent box",
+    "video_backend": "pyav",
+    "root": "/home/jeff/lerobot-doctor/dataset",
+    "seconds": 2.6,
+    "log": "/home/jeff/lerobot-doctor/logs/dataset.log"
+  },
+  "weights": {
+    "L3": {
+      "repo": "lerobot/smolvla_base",
+      "params": 450046176,
+      "bytes": 914740972,
+      "gated": false
+    },
+    "L4": {},
+    "L5": {
+      "repo": "lerobot/pi05_base",
+      "params": 3616757520,
+      "bytes": 14467176446,
+      "gated": false
+    }
+  },
+  "gated": "no_access",
+  "finished_at": "2026-09-19T07:19:10",
+  "verdicts": {
+    "install": "PASS",
+    "levels": {
+      "L1": {
+        "infer": {
+          "mark": "ok",
+          "evidence": "measured",
+          "zh": "本地实时推理（每块 8 ms，预算 3333 ms）；模拟执行 10 s ✅，控制 30 Hz",
+          "en": "real-time local inference (8 ms per chunk, budget 3333 ms); simulated task 10 s OK at 30 Hz"
+        },
+        "train": {
+          "mark": "ok",
+          "zh": "本地训练（batch 8，每步 0.12 s，参考任务约 0.9 小时）",
+          "en": "train locally (batch 8, 0.12 s per step, ~0.9 h for the reference task)",
+          "cloud": false,
+          "evidence": "measured"
+        }
+      },
+      "L2": {
+        "infer": {
+          "mark": "warn",
+          "evidence": "measured",
+          "zh": "本地可推理但接近上限（每块 672 ms，预算 1067 ms）；建议相机降到 320×240 或加长 chunk；模拟执行 10 s ✅，控制 18 Hz",
+          "en": "local inference works but near the limit (672 ms per chunk, budget 1067 ms); lower cameras to 320x240 or lengthen the chunk; simulated task 10 s OK at 18 Hz"
+        },
+        "train": {
+          "mark": "ok",
+          "zh": "本地训练（batch 8，每步 0.20 s，参考任务约 1.5 小时）",
+          "en": "train locally (batch 8, 0.20 s per step, ~1.5 h for the reference task)",
+          "cloud": false,
+          "evidence": "measured"
+        }
+      },
+      "L3": {
+        "infer": {
+          "mark": "ok",
+          "evidence": "measured",
+          "zh": "本地实时推理（每块 79 ms，预算 1667 ms）；模拟执行 10 s ✅，控制 29 Hz",
+          "en": "real-time local inference (79 ms per chunk, budget 1667 ms); simulated task 10 s OK at 29 Hz"
+        },
+        "train": {
+          "mark": "ok",
+          "zh": "本地训练（batch 8，每步 0.13 s，参考任务约 1.0 小时）",
+          "en": "train locally (batch 8, 0.13 s per step, ~1.0 h for the reference task)",
+          "cloud": false,
+          "evidence": "measured"
+        }
+      },
+      "L4": {
+        "infer": {
+          "mark": "skip",
+          "evidence": "not_run",
+          "zh": "用户选择跳过 π0 系",
+          "en": "user chose to skip the pi0 family"
+        },
+        "train": {
+          "mark": "skip",
+          "evidence": "not_run",
+          "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
+          "en": "inference was not run (user chose to skip the pi0 family); same precondition",
+          "cloud": null
+        }
+      },
+      "L5": {
+        "infer": {
+          "mark": "skip",
+          "evidence": "not_run",
+          "zh": "用户选择跳过 π0 系",
+          "en": "user chose to skip the pi0 family"
+        },
+        "train": {
+          "mark": "skip",
+          "evidence": "not_run",
+          "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
+          "en": "inference was not run (user chose to skip the pi0 family); same precondition",
+          "cloud": null
+        }
+      }
+    },
+    "basics": {
+      "mark": "ok"
+    },
+    "route": {
+      "rule": "R1",
+      "level": "L3",
+      "zh": "全流程本地：录数据 → 本地训练 SmolVLA → 本地运行。",
+      "en": "Everything local: record data -> train SmolVLA locally -> run locally."
+    },
+    "notes": [
+      [
+        "torchcodec 不可用，视频解码走 pyav：正常，只是慢一点。",
+        "torchcodec unavailable, video decoding uses pyav: fine, just slower."
+      ]
+    ]
+  }
+}
