@@ -40,7 +40,7 @@ from types import SimpleNamespace
 # Constants. Every threshold is named and carries its source; nothing is tuned per machine.
 # ----------------------------------------------------------------------------------------------
 
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.1.1"
 LEROBOT_VERSION = "0.6.1"
 PYTHON_VERSION = "3.12"                         # lerobot 0.6.1: Requires-Python >=3.12
 VISER_SPEC = "viser[urdf]==1.1.0"               # same pin as the Season-1 course repo
@@ -79,7 +79,9 @@ INFER_BUDGET_S = 12 * 60
 TRAIN_BUDGET_S = 15 * 60
 TRAIN_L1_BUDGET_S = 25 * 60
 HEARTBEAT_SILENCE_S = 2.0
-NON_TTY_HEARTBEAT_S = 10.0
+NON_TTY_HEARTBEAT_S = 30.0     # log files: one "still working" line per half minute, never a stream
+BAR_WIDTH = 24                 # cells in a progress bar
+BAR_LOG_STEP = 25              # log files: a bar line only at 25 / 50 / 75 / 100 %
 CHILD_POLL_S = 0.05
 UV_HTTP_TIMEOUT_S = 600    # uv's default 30 s drops 600 MB CUDA wheels on slow links
 INSTALL_ATTEMPTS = 3       # network hiccups are the most common student failure; uv caches finished wheels
@@ -185,6 +187,7 @@ class Console:
         self._stop = threading.Event()
         self._thread = None
         self._last_nontty_beat = 0.0
+        self._bar_bucket = {}          # per bar label: last quarter written to a log file
 
     def _can_encode(self, text: str) -> bool:
         enc = getattr(self.stream, "encoding", None) or "ascii"
@@ -202,6 +205,21 @@ class Console:
             self.stream.write("\r" + " " * self._transient_len + "\r")
             self._transient_len = 0
 
+    def _fit(self, text: str) -> str:
+        """Cut a status line to the terminal width. A line that wraps cannot be rewound with \\r,
+        and every redraw would then leave the previous row on screen (the classic scrolling spam)."""
+        width = shutil.get_terminal_size((100, 24)).columns - 1
+        if dwidth(text) <= width:
+            return text
+        out, used = [], 0
+        for ch in text:
+            w = dwidth(ch)
+            if used + w > width - 1:
+                break
+            out.append(ch)
+            used += w
+        return "".join(out) + "…"
+
     def line(self, text: str = ""):
         with self._lock:
             self._clear_transient()
@@ -217,20 +235,35 @@ class Console:
             self.stream.flush()
             self._last_output = time.monotonic()
 
-    def transient(self, text: str):
-        """A status line that gets overwritten (tty) or throttled to one line per 10 s (non-tty)."""
+    def transient(self, text: str, log_worthy: bool = False):
+        """One status line that is redrawn in place on a terminal. In a log file (no tty) it is
+        printed only when `log_worthy` (a milestone) or at most once per NON_TTY_HEARTBEAT_S."""
         with self._lock:
             now = time.monotonic()
             if self.tty:
+                text = self._fit(text)
                 self._clear_transient()
                 self.stream.write("\r" + text)
                 self.stream.flush()
-                self._transient_len = len(text) + 2
-            elif now - self._last_nontty_beat >= NON_TTY_HEARTBEAT_S:
+                self._transient_len = dwidth(text) + 1
+            elif log_worthy or now - self._last_nontty_beat >= NON_TTY_HEARTBEAT_S:
                 self.stream.write(text + "\n")
                 self.stream.flush()
                 self._last_nontty_beat = now
             self._last_output = now
+
+    def bar(self, label: str, i: int, n: int, note: str = ""):
+        """conda/npm-style bar: `label [████████░░░░░░░░] 12/20  60%  note`, redrawn in place."""
+        n = max(n, 1)
+        frac = min(max(i / n, 0.0), 1.0)
+        filled = int(round(frac * BAR_WIDTH))
+        block, empty = ("#", "-") if self.ascii else ("█", "░")
+        text = f"  {label} [{block * filled}{empty * (BAR_WIDTH - filled)}] {i}/{n} {int(frac * 100):3d}%  {note}".rstrip()
+        bucket = int(frac * 100) // BAR_LOG_STEP          # 0..4: which quarter we are in
+        last = self._bar_bucket.get(label, -1)
+        milestone = i >= n or bucket > last
+        self._bar_bucket[label] = 5 if i >= n else bucket
+        self.transient(text, log_worthy=milestone)
 
     def activity(self, text: str):
         """What the heartbeat says while nothing else is being printed."""
@@ -263,7 +296,7 @@ class Console:
                     continue
                 elapsed = int(time.monotonic() - self._activity_since)
                 i = (i + 1) % len(spin)
-                text = f"{spin[i]} {self._activity} … {fmt_duration(elapsed)}"
+                text = f"  {spin[i]} {self._activity} … {fmt_duration(elapsed)}"
             self.transient(text)
             with self._lock:
                 self._last_output -= HEARTBEAT_SILENCE_S  # keep beating; transient() reset it
@@ -727,7 +760,7 @@ def build_env(con: Console, specs: dict, report: dict, args) -> Path | None:
     cmd = [uv, "pip", "install", "--python", str(py), spec, VISER_SPEC]
     if backend != "default":
         cmd += ["--torch-backend", backend]
-    con.activity(bi("安装 LeRobot（uv 会打印自己的进度）", "installing LeRobot (uv prints its own progress)"))
+    con.activity(bi("安装 LeRobot", "installing LeRobot"))
     t0 = time.monotonic()
     env = dict(os.environ, UV_HTTP_TIMEOUT=str(UV_HTTP_TIMEOUT_S))
     for attempt in range(1, INSTALL_ATTEMPTS + 1):
@@ -1090,7 +1123,10 @@ def run_worker(py: Path, con: Console, log_path: Path, worker_args: list[str], b
         if text.startswith("@@progress "):
             _, stage, i, n, *extra = text.split(" ", 4)
             note = extra[0] if extra else ""
-            con.transient(f"  {con.mark('run')} {progress_label} {stage} {i}/{n} {note}")
+            try:
+                con.bar(f"{progress_label} {stage}", int(i), int(n), note)
+            except ValueError:
+                con.transient(f"  {progress_label} {stage} {i}/{n} {note}")
             return True
         if text.startswith("@@activity "):
             con.activity(text[len("@@activity "):])
@@ -1220,7 +1256,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
             continue
         if sim:
             sim.begin_level(lv.label)
-        con.activity(bi(f"{lv.label}：下载 / 加载模型", f"{lv.label}: downloading / loading model"))
+        con.activity(f"{lv.label} · " + bi("下载/加载模型", "downloading/loading model"))
         wargs = ["infer", "--level", lv.id, "--device", device, "--dtype", dtype]
         if args.vram_cap:
             wargs += ["--vram-cap", str(args.vram_cap)]
@@ -1245,7 +1281,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
             con.item("skip" if pre["evidence"] == "not_run" else "bad", pre["zh"], pre["en"])
             report.save()
             continue
-        con.activity(bi(f"{lv.label}：加载模型准备训练", f"{lv.label}: loading model for training"))
+        con.activity(f"{lv.label} · " + bi("加载模型准备训练", "loading model for training"))
         wargs = ["train", "--level", lv.id, "--device", device, "--dtype", dtype]
         if args.vram_cap:
             wargs += ["--vram-cap", str(args.vram_cap)]
@@ -1433,7 +1469,7 @@ def worker_dataset() -> None:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from lerobot.utils.import_utils import get_safe_default_video_backend
 
-    emit("activity", bi("下载样例数据（HF 会显示进度条）", "downloading sample data (HF shows a progress bar)"))
+    emit("activity", bi("下载样例数据", "downloading sample data"))
     root = WORK_DIR / "dataset"
     ds = LeRobotDataset(DATASET_REPO, root=root, episodes=DATASET_EPISODES)
     emit("activity", bi("解码第一帧，检查视频链路", "decoding the first frame to test the video path"))
@@ -1599,7 +1635,7 @@ def worker_infer(level: Level, device_name: str, dtype: str, vram_cap: float | N
     task = str(ds.meta.tasks.index[0])
     robot_type = ds.meta.robot_type or "so101_follower"
 
-    emit("activity", bi(f"{level.label}：下载 / 加载模型到 {device_name}", f"{level.label}: downloading / loading the model to {device_name}"))
+    emit("activity", f"{level.label} · " + bi(f"下载/加载模型到 {device_name}", f"downloading/loading model to {device_name}"))
     t_load = time.monotonic()
     try:
         policy, pre, post, _ = load_level_policy(level, device, dtype, ds.meta, for_training=False, checkpoint=checkpoint)
@@ -1621,7 +1657,7 @@ def worker_infer(level: Level, device_name: str, dtype: str, vram_cap: float | N
         warm, timed = (WARMUP_GPU, TIMED_GPU) if is_gpu else (WARMUP_CPU, TIMED_CPU)
         budget = n_action_steps / CONTROL_FPS
         lat = []
-        emit("activity", bi(f"{level.label}：预热", f"{level.label}: warm-up"))
+        emit("activity", f"{level.label} · " + bi("预热", "warm-up"))
         try:
             with torch.inference_mode():
                 # select_action on an empty queue = exactly one forward pass (predict_action_chunk)
@@ -1733,7 +1769,7 @@ def worker_train(level: Level, device_name: str, dtype: str, vram_cap: float | N
     policy = None
     for batch_size in level.batches:
         _free_cache(device)
-        emit("activity", bi(f"{level.label}：batch {batch_size} 加载模型", f"{level.label}: loading model for batch {batch_size}"))
+        emit("activity", f"{level.label} · batch {batch_size} · " + bi("加载模型", "loading model"))
         try:
             if policy is None:
                 policy, pre, post = build_policy(cfg_policy, rename_map, meta, device, for_training=True)

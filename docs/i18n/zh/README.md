@@ -24,19 +24,19 @@
 macOS，在「终端」里：
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.sh | bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.1/doctor.sh | bash
 ```
 
 Linux，在终端里：
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.sh | bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.1/doctor.sh | bash
 ```
 
 Windows 10/11，在 PowerShell 里：
 
 ```powershell
-irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.ps1 | iex
+irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.1/doctor.ps1 | iex
 ```
 
 想下载文件：下载本仓库的 ZIP 并解压，Windows 双击 `doctor.bat`，macOS 把 `doctor.command` 拖进终端窗口，Linux 运行 `bash doctor.sh`。

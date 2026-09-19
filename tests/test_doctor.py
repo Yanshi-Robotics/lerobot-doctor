@@ -296,6 +296,27 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(len(doc.pad("ab", 5)), 5)
 
 
+class ProgressTests(unittest.TestCase):
+    def test_log_mode_prints_each_quarter_once(self):
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        con = doc.Console(stream=stream)          # a BytesIO wrapper is not a tty -> log mode
+        for i in range(1, 301, 15):
+            con.bar("demo", i, 300)
+        con.bar("demo", 300, 300)
+        stream.seek(0)
+        lines = stream.read().splitlines()
+        self.assertEqual([l.split()[-2] for l in lines], ["1/300", "76/300", "151/300", "226/300", "300/300"])
+
+    def test_status_line_is_cut_to_the_terminal_width(self):
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        con = doc.Console(stream=stream)
+        con.tty = True
+        wide = "加载模型 loading the model " * 20
+        fitted = con._fit(wide)
+        self.assertLess(doc.dwidth(fitted), doc.shutil.get_terminal_size((100, 24)).columns)
+        self.assertTrue(fitted.endswith("…"))
+
+
 class WorkerProtocolTests(unittest.TestCase):
     def test_result_line_is_json(self):
         import contextlib

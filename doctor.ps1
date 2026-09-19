@@ -1,5 +1,5 @@
 # LeRobot Doctor launcher for Windows 10/11 (PowerShell).
-#   irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.0/doctor.ps1 | iex
+#   irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.1/doctor.ps1 | iex
 # or double-click doctor.bat from an unpacked zip.
 #
 # Three jobs only: make sure `uv` exists, make sure Python 3.12 exists, run lerobot_doctor.py.
