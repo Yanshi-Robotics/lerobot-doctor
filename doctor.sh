@@ -7,7 +7,7 @@
 # run lerobot_doctor.py. Everything after that is the Python file's job.
 set -euo pipefail
 
-DOCTOR_TAG="${DOCTOR_TAG:-v0.1.4}"   # must equal the tag this file is published under
+DOCTOR_TAG="${DOCTOR_TAG:-v0.1.5}"   # must equal the tag this file is published under
 RAW="https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/${DOCTOR_TAG}"
 HOME_DIR="${HOME}/lerobot-doctor"
 mkdir -p "${HOME_DIR}"

@@ -43,7 +43,7 @@ irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor
 
 ![策略驱动 SO-101 时的三维模拟页面](../../images/sim-page.png)
 
-![最后打在终端里的报告（RTX 5070 Ti 机器的真实结果）](../../images/report.png)
+![RTX 5070 Ti 那次体检的最终报告：先英文一张，再中文一张](../../images/report.png)
 
 ## 主要能力
 
@@ -52,7 +52,7 @@ irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor
 - 五个级别，对应 LeRobot 硬件指南的五个组各取一个代表，全部不需要 Hugging Face 账号就能下载：ACT、Diffusion Policy、SmolVLA、X-VLA、WALL-OSS。
 - 每级：在 `lerobot/svla_so101_pickplace` 上计时前向，在运动学 SO-101（viser，`127.0.0.1:4604`）上执行十秒模拟任务，再用 `lerobot` 自己的优化器和更新函数真训几步。
 - 写死的规则树把测量值变成每级结论和一条 SO-101 路线：全流程本地、上云训练本地推理、或只能录数据。
-- 中英双语终端输出，每隔几秒就有进度，机器可读的报告落在 `~/lerobot-doctor/report-<日期>.json`。
+- 终端输出中英双语，每隔几秒就有进度；最后的报告打两张，先英文后中文，机器可读的一份落在 `~/lerobot-doctor/report-<日期>.json`。
 
 ## 它检查什么
 
@@ -80,6 +80,7 @@ ACT 会再多训最多 300 步（封顶五分钟），然后再驱动一次模�
 python tests/test_doctor.py          # 规则树、阶梯状态机、解析器；不联网、不用 torch
 python lerobot_doctor.py --specs-only
 python docs/check_readme.py
+python docs/report_image.py           # 用示例报告重画 docs/images/report.png
 ```
 
 `lerobot_doctor.py` 是唯一的程序文件；四个启动器只负责装 `uv` 和 Python 3.12。所有阈值都是带来源注释的具名常量。常用开关：`--device cpu`、`--vram-cap 8`（模拟更小的显卡）、`--no-sim`、`--port`、`--skip-install`、`--uninstall`。真实机器的示例报告：[`examples/linux-ubuntu24-rtx5070ti-16gb.json`](../../../examples/linux-ubuntu24-rtx5070ti-16gb.json) 与 [`examples/linux-ubuntu24-cpu-only-9800x3d.json`](../../../examples/linux-ubuntu24-cpu-only-9800x3d.json)。

@@ -22,7 +22,7 @@ function Initialize-LeRobotDoctor {
     # Whatever a function lets fall into the pipeline becomes its return value, so every command in
     # here either goes to the host (Write-Host, Out-Host) or is discarded ($null = ...).
     $ErrorActionPreference = "Stop"   # function scope: does not leak into the user's session under iex
-    $DoctorTag = if ($env:DOCTOR_TAG) { $env:DOCTOR_TAG } else { "v0.1.4" }   # must equal the tag this file is published under
+    $DoctorTag = if ($env:DOCTOR_TAG) { $env:DOCTOR_TAG } else { "v0.1.5" }   # must equal the tag this file is published under
     $Raw = "https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/$DoctorTag"
     $Issues = "https://github.com/Yanshi-Robotics/lerobot-doctor/issues/new"
     $HomeDir = Join-Path $HOME "lerobot-doctor"

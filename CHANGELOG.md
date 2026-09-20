@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 - 2026-09-20
+
+- The final report is printed twice: a complete English box first, then a complete Chinese one.
+  Mixed-language cells made both halves hard to scan. The JSON report, the launchers and the Quick
+  start command are unchanged.
+
 ## 0.1.4 - 2026-09-19
 
 Windows: a tester saw the window vanish ("flash crash"). Root causes and the fixes:

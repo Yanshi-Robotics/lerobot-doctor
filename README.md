@@ -43,7 +43,7 @@ Every verdict carries its evidence. A "cannot" is printed only after a measured 
 
 ![The 3D simulation page while a policy drives the SO-101](docs/images/sim-page.png)
 
-![The final report, as printed in the terminal on an RTX 5070 Ti machine](docs/images/report.png)
+![The final report of the RTX 5070 Ti example run: the English box, then the Chinese one](docs/images/report.png)
 
 ## Key features
 
@@ -52,7 +52,7 @@ Every verdict carries its evidence. A "cannot" is printed only after a measured 
 - Five levels, one representative per group of the LeRobot hardware guide, all downloadable without a Hugging Face account: ACT, Diffusion Policy, SmolVLA, X-VLA and WALL-OSS.
 - Per level: timed forward passes on `lerobot/svla_so101_pickplace`, a ten-second simulated task on a kinematic SO-101 (viser, `127.0.0.1:4604`), then real training steps with `lerobot`'s own optimizer and update function.
 - A fixed rule tree turns measurements into per-level verdicts and one SO-101 route: everything local, cloud training with local inference, or record-only.
-- Bilingual (Chinese and English) terminal output, progress every few seconds, and a machine-readable report at `~/lerobot-doctor/report-<date>.json`.
+- Bilingual terminal output with progress every few seconds; the final report is printed twice, first in English, then in Chinese, and a machine-readable copy lands at `~/lerobot-doctor/report-<date>.json`.
 
 ## What it checks
 
@@ -80,6 +80,7 @@ ACT then trains for up to 300 extra steps (capped at five minutes) and drives th
 python tests/test_doctor.py          # rule tree, ladder state machine, parsers; no network, no torch
 python lerobot_doctor.py --specs-only
 python docs/check_readme.py
+python docs/report_image.py           # redraw docs/images/report.png from the example report
 ```
 
 `lerobot_doctor.py` is the only program file; the four launchers only install `uv` and Python 3.12. Every threshold is a named constant with its source in a comment. Useful switches: `--device cpu`, `--vram-cap 8` (pretend a smaller GPU), `--no-sim`, `--port`, `--skip-install`, `--uninstall`. Example reports from real machines: [`examples/linux-ubuntu24-rtx5070ti-16gb.json`](examples/linux-ubuntu24-rtx5070ti-16gb.json) and [`examples/linux-ubuntu24-cpu-only-9800x3d.json`](examples/linux-ubuntu24-cpu-only-9800x3d.json).

@@ -451,6 +451,41 @@ class CrashHandlerTests(unittest.TestCase):
             path.unlink()
 
 
+class ReportRenderTests(unittest.TestCase):
+    """The final report is two complete boxes from the same data, English first, then Chinese."""
+
+    def setUp(self):
+        import json
+        self.report = json.loads((ROOT / "examples" / "linux-ubuntu24-rtx5070ti-16gb.json").read_text(encoding="utf-8"))
+        self.verdicts = doc.evaluate(self.report)
+
+    def _lines(self, draw):
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        draw(doc.Console(stream=stream))
+        stream.seek(0)
+        return [l for l in stream.read().splitlines() if l.strip()]
+
+    def test_english_box_has_no_chinese_and_even_borders(self):
+        import unicodedata
+        box = self._lines(lambda con: doc.render_one(con, self.report, self.verdicts, "en", 100))
+        self.assertTrue(box[0].startswith("╔"))
+        self.assertEqual({doc.vis_width(l) for l in box}, {100})
+        self.assertEqual([c for l in box for c in l if unicodedata.east_asian_width(c) in ("W", "F")], [])
+        self.assertIn("· Report", box[1])
+
+    def test_chinese_box_is_chinese_and_even_borders(self):
+        box = self._lines(lambda con: doc.render_one(con, self.report, self.verdicts, "zh", 100))
+        self.assertEqual({doc.vis_width(l) for l in box}, {100})
+        self.assertIn("· 体检报告", box[1])
+        self.assertNotIn("Inference", "".join(box))
+
+    def test_full_report_is_english_then_chinese_then_the_path(self):
+        lines = self._lines(lambda con: doc.render_report(con, self.report, self.verdicts, Path("/x/report.json")))
+        text = "\n".join(lines)
+        self.assertLess(text.index("· Report"), text.index("· 体检报告"))
+        self.assertEqual(text.count("LeRobot Doctor"), 2)
+        self.assertIn("/x/report.json", lines[-1])
+
 class WorkerProtocolTests(unittest.TestCase):
     def test_result_line_is_json(self):
         import contextlib

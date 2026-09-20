@@ -42,7 +42,7 @@ from types import SimpleNamespace
 # Constants. Every threshold is named and carries its source; nothing is tuned per machine.
 # ----------------------------------------------------------------------------------------------
 
-TOOL_VERSION = "0.1.4"
+TOOL_VERSION = "0.1.5"
 LEROBOT_VERSION = "0.6.1"
 PYTHON_VERSION = "3.12"                         # lerobot 0.6.1: Requires-Python >=3.12
 VISER_SPEC = "viser[urdf]==1.1.0"               # same pin as the Season-1 course repo
@@ -907,7 +907,7 @@ def infer_verdict(level: Level, r: dict) -> dict:
     demo = r.get("demo") or {}
     demo_txt = ""
     if demo.get("status") == "PASS":
-        demo_txt = (f"；模拟执行 {DEMO_SECONDS} s ✅，控制 {demo.get('hz', 0):.0f} Hz",
+        demo_txt = (f"；模拟执行 {DEMO_SECONDS} s 通过，控制 {demo.get('hz', 0):.0f} Hz",
                     f"; simulated task {DEMO_SECONDS} s OK at {demo.get('hz', 0):.0f} Hz")
     if st == "PASS":
         return {"mark": "ok", "evidence": "measured",
@@ -1134,8 +1134,8 @@ class BoxWriter:
             pad = self.inner - indent - vis_width(piece)
             self.con.line(f"{self.chars['v']}{' ' * indent}{piece}{' ' * max(pad, 0)}{self.chars['v']}")
 
-    def heading(self, zh: str, en: str):
-        self.row(self.paint("bold", f"{zh}  {en}"), indent=2)
+    def heading(self, text: str):
+        self.row(self.paint("bold", text), indent=2)
 
     def table(self, header: list[str], rows: list[list[str]], indent: int = 2):
         """A light table inside the box; column widths from content, last column absorbs the rest."""
@@ -1171,40 +1171,75 @@ class BoxWriter:
         self.row(c["cbl"] + c["tee_b"].join(c["rule"] * (w + 2) for w in widths) + c["cbr"], indent=indent)
 
 
-def short_infer(v: dict, r: dict) -> str:
+# One dictionary per language. The report is printed twice, a complete English box first, then a
+# complete Chinese one: mixed-language cells made both halves hard to scan. Verdict sentences already
+# arrive as {"zh": ..., "en": ...} pairs; this table covers the fixed words of the box itself.
+REPORT_TEXT = {
+    "en": {
+        "title": "Report", "machine": "Machine", "not_used": "not used this run", "video": "video decode",
+        "not_installed": "did not install", "basics": "Basics",
+        "basics_line": "assemble / calibrate / teleoperate / record",
+        "levels": "Levels", "header": ["Lv", "Model", "Inference", "Training"],
+        "legend": "{ok} ok   {warn} conditional   {bad} failed / floor   {skip} not tested",
+        "details": "Details and evidence", "infer": "inference", "train": "training", "estimate": "estimate",
+        "sep": ": ", "lp": " (", "rp": ")",
+        "est_words": {"local": "train locally", "tight": "tight", "cloud": "cloud"},
+        "est_note": "the estimate said '{w}'; the measurement wins", "route": "SO-101 route",
+        "per_chunk": "ms/chunk", "budget": "budget", "too_slow": "too slow", "no_fit": "does not fit",
+        "not_tested": "not tested", "to_cloud": " -> cloud", "overnight": " overnight",
+        "no_fit_cloud": "does not fit -> cloud", "no_forward_cloud": "no forward pass -> cloud",
+    },
+    "zh": {
+        "title": "体检报告", "machine": "电脑", "not_used": "本次未用", "video": "视频解码",
+        "not_installed": "装不上", "basics": "基础", "basics_line": "组装 / 标定 / 遥操作 / 录数据",
+        "levels": "各级实测", "header": ["级", "模型", "推理", "训练"],
+        "legend": "{ok} 通过   {warn} 有条件   {bad} 失败 / 硬门槛   {skip} 未测",
+        "details": "说明与依据", "infer": "推理", "train": "训练", "estimate": "预估",
+        "sep": "：", "lp": "（", "rp": "）",
+        "est_words": {"local": "本地可训", "tight": "勉强", "cloud": "需上云"},
+        "est_note": "预估表曾说「{w}」，以实测为准", "route": "SO-101 路线",
+        "per_chunk": "ms/块", "budget": "预算", "too_slow": "太慢", "no_fit": "装不下",
+        "not_tested": "未测", "to_cloud": " → 上云", "overnight": " 过夜",
+        "no_fit_cloud": "装不下 → 上云", "no_forward_cloud": "前向都装不下 → 上云",
+    },
+}
+
+
+def short_infer(v: dict, r: dict, t: dict) -> str:
     """One table cell for the inference verdict."""
     st = r.get("status", "NOT_RUN")
     ms = r.get("latency_ms")
     demo = r.get("demo") or {}
     if st == "PASS":
-        return f"{ms:.0f} ms/块 chunk · {demo.get('hz', 0):.0f} Hz" if demo else f"{ms:.0f} ms/块 chunk"
+        return f"{ms:.0f} {t['per_chunk']}" + (f" · {demo.get('hz', 0):.0f} Hz" if demo else "")
     if st == "MARGINAL":
-        return f"{ms:.0f} ms/块 chunk（预算 budget {r.get('budget_ms', 0):.0f}）"
+        return f"{ms:.0f} {t['per_chunk']}{t['lp']}{t['budget']} {r.get('budget_ms', 0):.0f}{t['rp']}"
     if st == "TOO_SLOW":
-        return f"{ms:.0f} ms/块 chunk（预算 budget {r.get('budget_ms', 0):.0f}）太慢 too slow"
+        return f"{ms:.0f} {t['per_chunk']}{t['lp']}{t['budget']} {r.get('budget_ms', 0):.0f}{t['rp']} {t['too_slow']}"
     if st in ("FAIL_OOM", "FAIL_RAM", "SKIPPED_FLOOR"):
-        return "装不下 does not fit"
-    return "未测 not tested"
+        return t["no_fit"]
+    return t["not_tested"]
 
 
-def short_train(v: dict, r: dict) -> str:
+def short_train(v: dict, r: dict, t: dict) -> str:
     st = r.get("status", "NOT_RUN")
     if st == "PASS":
         base = f"{r['hours']:.1f} h · batch {r['batch']}"
         if v.get("cloud"):
-            return base + " → 上云 cloud"
+            return base + t["to_cloud"]
         if v.get("mark") == "warn":
-            return base + " 过夜 overnight"
+            return base + t["overnight"]
         return base
     if st in ("FAIL_OOM", "FAIL_RAM"):
-        return "装不下 → 上云 cloud"
+        return t["no_fit_cloud"]
     if st == "SKIPPED_FLOOR":
-        return "前向都装不下 no forward → 上云 cloud"
-    return "未测 not tested"
+        return t["no_forward_cloud"]
+    return t["not_tested"]
 
 
-def render_report(con: Console, report: dict, verdicts: dict, path: Path | None = None):
-    width = max(REPORT_MIN_WIDTH, min(REPORT_MAX_WIDTH, shutil.get_terminal_size((100, 24)).columns - 1))
+def render_one(con: Console, report: dict, verdicts: dict, lang: str, width: int):
+    """One complete report box in one language."""
+    t = REPORT_TEXT[lang]
     box = BoxWriter(con, width)
     specs = report["specs"]
     inst = report.get("install", {})
@@ -1212,76 +1247,76 @@ def render_report(con: Console, report: dict, verdicts: dict, path: Path | None 
     con.line("")
     box.top()
     when = (report.get("finished_at") or now_iso()).replace("T", " ")[:16]
-    box.row(box.paint("bold", f"LeRobot Doctor {TOOL_VERSION} · 体检报告 Report") + f"   {when} · {fmt_duration(report.get('seconds', 0))}")
+    box.row(box.paint("bold", f"LeRobot Doctor {TOOL_VERSION} · {t['title']}") + f"   {when} · {fmt_duration(report.get('seconds', 0))}")
     box.divider()
 
     # ---- machine ---------------------------------------------------------------------------
-    box.heading("电脑", "Machine")
+    box.heading(t["machine"])
     dev = {"cuda": "CUDA", "mps": "Apple MPS", "cpu": "CPU only"}[specs["accelerator"]]
     gpu = specs["nvidia"][0]["name"] if specs.get("nvidia") else ("Apple Silicon" if specs["accelerator"] == "mps" else "—")
     box.row(f"{specs['os']} · {specs['cpu']} · RAM {specs['ram_gb']} GB", indent=4)
     unused = specs.get("nvidia") and specs["accelerator"] != "cuda"
-    box.row(f"GPU {gpu}" + (f"（{bi('本次未用', 'not used this run')}）" if unused else "")
+    box.row(f"GPU {gpu}" + (f"{t['lp']}{t['not_used']}{t['rp']}" if unused else "")
             + f" · {dev} {specs.get('device_mem_gb')} GB" + (" · bf16" if specs.get("bf16") else ""), indent=4)
     if inst.get("status") == "PASS":
         box.row(f"{box.mark('ok')} LeRobot {inst.get('lerobot', LEROBOT_VERSION)} · torch {inst.get('torch', '?')} · "
-                f"{bi('视频解码', 'video decode')} {'torchcodec' if inst.get('torchcodec') else 'pyav'}", indent=4)
+                f"{t['video']} {'torchcodec' if inst.get('torchcodec') else 'pyav'}", indent=4)
     else:
-        box.row(f"{box.mark('bad')} LeRobot {LEROBOT_VERSION} {bi('装不上', 'did not install')} · {inst.get('reason', '')} · {inst.get('log', '')}", indent=4)
+        box.row(f"{box.mark('bad')} LeRobot {LEROBOT_VERSION} {t['not_installed']} · {inst.get('reason', '')} · {inst.get('log', '')}", indent=4)
     box.divider()
 
     if verdicts.get("basics"):
-        box.heading("基础", "Basics")
-        box.row(f"{box.mark('ok')} {bi('组装 / 标定 / 遥操作 / 录数据', 'assemble / calibrate / teleoperate / record')}", indent=4)
+        box.heading(t["basics"])
+        box.row(f"{box.mark('ok')} {t['basics_line']}", indent=4)
         for zh, en in verdicts.get("notes", []):
-            box.row(f"· {zh}", indent=6)
-            box.row(f"  {en}", indent=6)
+            box.row(f"· {zh if lang == 'zh' else en}", indent=6)
         box.divider()
 
     if verdicts["levels"]:
-        box.heading("各级实测", "Levels")
-        header = ["级 Lv", "模型 Model", "推理 Inference", "训练 Training"]
+        box.heading(t["levels"])
         rows = []
         for lv in LEVELS:
             v = verdicts["levels"][lv.id]
             ri = levels.get(lv.id, {}).get("infer") or {}
             rt = levels.get(lv.id, {}).get("train") or {}
             rows.append([lv.id, lv.label,
-                         f"{box.mark(v['infer']['mark'])} {short_infer(v['infer'], ri)}",
-                         f"{box.mark(v['train']['mark'])} {short_train(v['train'], rt)}"])
-        box.table(header, rows)
-        box.row(box.paint("dim", f"{box.marks['ok']} 通过 ok   {box.marks['warn']} 有条件 conditional   "
-                                 f"{box.marks['bad']} 失败/硬门槛 failed/floor   {box.marks['skip']} 未测 not tested"), indent=4)
+                         f"{box.mark(v['infer']['mark'])} {short_infer(v['infer'], ri, t)}",
+                         f"{box.mark(v['train']['mark'])} {short_train(v['train'], rt, t)}"])
+        box.table(list(t["header"]), rows)
+        box.row(box.paint("dim", t["legend"].format(**box.marks)), indent=4)
         box.divider()
 
-        # ---- details: every non-green cell gets its full bilingual sentence (the evidence) ----
+        # ---- details: every non-green cell gets its full sentence (the evidence) -------------
         details = []
         for lv in LEVELS:
             v = verdicts["levels"][lv.id]
-            for stage_zh, stage_en, vv in (("推理", "inference", v["infer"]), ("训练", "training", v["train"])):
+            for stage, vv in ((t["infer"], v["infer"]), (t["train"], v["train"])):
                 if vv["mark"] != "ok":
-                    details.append((lv, stage_zh, stage_en, vv))
+                    details.append((lv, stage, vv["mark"], vv[lang]))
             est = (report.get("estimate") or {}).get(lv.id, {}).get("train_estimate")
             measured = v["train"].get("cloud")
             if est and measured is not None and (est == "cloud") != measured:
-                words = {"local": "本地可训 train locally", "tight": "勉强 tight", "cloud": "需上云 cloud"}
-                details.append((lv, "预估", "estimate", {"mark": "skip",
-                                                       "zh": f"预估表曾说「{words[est]}」，以实测为准",
-                                                       "en": f"the estimate said '{words[est]}'; the measurement wins"}))
+                details.append((lv, t["estimate"], "skip", t["est_note"].format(w=t["est_words"][est])))
         if details:
-            box.heading("说明与依据", "Details and evidence")
-            for lv, stage_zh, stage_en, vv in details:
-                box.row(f"{box.mark(vv['mark'])} {lv.id} {lv.label} · {stage_zh} {stage_en}：{vv['zh']}", indent=4)
-                box.row(f"  {vv['en']}", indent=6)
+            box.heading(t["details"])
+            for lv, stage, mark, text in details:
+                box.row(f"{box.mark(mark)} {lv.id} {lv.label} · {stage}{t['sep']}{text}", indent=4)
             box.divider()
 
     r = verdicts["route"]
-    box.heading("SO-101 路线", f"Route [{r['rule']}]")
-    box.row(box.paint("bold", r["zh"]), indent=4)
-    box.row(r["en"], indent=4)
+    box.heading(f"{t['route']} [{r['rule']}]")
+    box.row(box.paint("bold", r[lang]), indent=4)
     box.bottom()
-    if path:
-        con.line(f"  {bi('完整数据（求助时发这个文件）', 'full data (share this file when asking for help)')}: {path}")
+
+
+def render_report(con: Console, report: dict, verdicts: dict, path: Path | None = None):
+    """The report twice: a complete English box, then a complete Chinese one, then the JSON path."""
+    width = max(REPORT_MIN_WIDTH, min(REPORT_MAX_WIDTH, shutil.get_terminal_size((100, 24)).columns - 1))
+    for lang in ("en", "zh"):
+        render_one(con, report, verdicts, lang, width)
+    if path:   # the path on its own line: easy to select, and it never pushes the label past the box width
+        con.line(f"  {bi('完整数据（求助时发这个文件）', 'full data (share this file when asking for help)')}:")
+        con.line(f"  {path}")
 
 
 # ----------------------------------------------------------------------------------------------
