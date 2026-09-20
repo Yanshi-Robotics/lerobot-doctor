@@ -33,7 +33,7 @@ irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor
 
 想下载文件：下载本仓库的 ZIP 并解压，Windows 双击 `doctor.bat`，macOS 把 `doctor.command` 拖进终端窗口，Linux 运行 `bash doctor.sh`。
 
-预计 30 到 90 分钟，大部分是下载（约 7 GB 的包和 13 GB 的模型权重），需要约 30 GB 空闲磁盘。屏幕上一直显示正在做什么；`Ctrl-C` 停止并保留已完成的部分。如果程序自己出错，它会写 `~/lerobot-doctor/logs/crash-<时间>.log` 并把路径打在屏幕上，Windows 下窗口会等你按回车再关；报 issue 时附上这个文件和报告 JSON。模型权重放在标准的 Hugging Face 缓存里，之后学 LeRobot 课程时直接复用。
+有 NVIDIA 显卡的机器预计 30 到 60 分钟，只有 CPU 的机器 1 到 2.5 小时；大部分时间是下载（约 7 GB 的包和 13 GB 的模型权重），需要约 30 GB 空闲磁盘。屏幕上一直显示正在做什么；`Ctrl-C` 停止并保留已完成的部分。如果程序自己出错，它会写 `~/lerobot-doctor/logs/crash-<时间>.log` 并把路径打在屏幕上，Windows 下窗口会等你按回车再关；报 issue 时附上这个文件和报告 JSON。模型权重放在标准的 Hugging Face 缓存里，之后学 LeRobot 课程时直接复用。
 
 ## 概览
 
@@ -50,9 +50,9 @@ irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor
 - Linux、macOS（Apple Silicon 与 Intel）、Windows 10/11 都是粘一行命令；用户不用自己配 Python。
 - 用 `uv` 在独立虚拟环境里安装 `lerobot==0.6.1`；装不上本身就是一条结论，附日志。
 - 五个级别，对应 LeRobot 硬件指南的五个组各取一个代表，全部不需要 Hugging Face 账号就能下载：ACT、Diffusion Policy、SmolVLA、X-VLA、WALL-OSS。
-- 每级：在 `lerobot/svla_so101_pickplace` 上计时前向，在运动学 SO-101（viser，`127.0.0.1:4604`）上执行十秒模拟任务，再用 `lerobot` 自己的优化器和更新函数真训几步。
+- 每级：在 `lerobot/svla_so101_pickplace` 上计时前向（按第 95 百分位定档：机械臂等的是最慢的那一块），在运动学 SO-101（viser，`127.0.0.1:4604`）上执行十秒模拟任务（画面在计时前解好，量的是策略不是视频解码器），再用 `lerobot` 自己的优化器和更新函数真训几步。
 - 写死的规则树把测量值变成每级结论和一条 SO-101 路线：全流程本地、上云训练本地推理、或只能录数据。
-- 终端输出中英双语，每隔几秒就有进度；最后的报告打两张，先英文后中文，机器可读的一份落在 `~/lerobot-doctor/report-<日期>.json`。
+- 终端输出中英双语，每隔几秒就有进度；最后的报告打两张，先英文后中文，机器可读的一份落在 `~/lerobot-doctor/report-<日期>-<时间>.json`（另有一份 `report-latest.json` 副本）。报告记录是哪个启动器、哪个 tag、哪个 Python 跑出来的。
 
 ## 它检查什么
 
@@ -69,23 +69,23 @@ irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor
 | L5 | WALL-OSS | Large VLA | `x-square-robot/wall-oss-flow` |
 
    只有两种情况会不试就跳过一级：权重放不进设备内存，或更小的一级已经内存不足。慢、超时、下载失败都不会跳过下一级。
-4. 训练阶梯，同样顺序，只测前向能装下的级别。内存不足时 batch 逐级减小。每步耗时投影到参考任务（50 集 × 30 秒 × 30 fps，5 个 epoch），以小时报出。
-5. 结论。推理：实时、接近上限、太慢、装不下。训练：本地、过一夜、太慢（上云）、装不下（上云）。路线：由本地能跑的最高级别决定是全本地、上云训练本地推理，还是只能录数据。
+4. 训练阶梯，同样顺序，只测前向能装下的级别。内存不足时 batch 逐级减小。每步耗时投影到参考任务（50 集 × 30 秒 × 30 fps，5 个 epoch），以小时报出；探针到了时间预算，也按已跑完的步数投影。只有 CPU 的机器上，更小的一级已经要上云时，更大的级别不再测训练（推理照测）。
+5. 结论。推理：实时、接近上限、太慢、装不下。训练：本地、过一夜、太慢（上云）、装不下（上云）。路线：由能全流程本地的最高级别决定；没有的话，由推理能在本地跑的最高级别决定，训练上云；再没有，就只能录数据。
 
 ACT 会再多训最多 300 步（封顶五分钟），然后再驱动一次模拟臂，页面上看到的是这台机器自己训出来的策略。
 
 ## 开发
 
 ```bash
-python tests/test_doctor.py          # 规则树、阶梯状态机、解析器；不联网、不用 torch
-python lerobot_doctor.py --specs-only
-python docs/check_readme.py
-python docs/report_image.py           # 用示例报告重画 docs/images/report.png
+python3 tests/test_doctor.py          # rule tree, ladder state machine, protocol parser, process runner; no network, no torch
+python3 lerobot_doctor.py --specs-only
+python3 docs/check_readme.py
+python3 docs/report_image.py          # writes docs/images/report.png from the example report; needs Chrome and Pillow
 ```
 
-`lerobot_doctor.py` 是唯一的程序文件；四个启动器只负责装 `uv` 和 Python 3.12。所有阈值都是带来源注释的具名常量。常用开关：`--device cpu`、`--vram-cap 8`（模拟更小的显卡）、`--no-sim`、`--port`、`--skip-install`、`--uninstall`。真实机器的示例报告：[`examples/linux-ubuntu24-rtx5070ti-16gb.json`](../../../examples/linux-ubuntu24-rtx5070ti-16gb.json) 与 [`examples/linux-ubuntu24-cpu-only-9800x3d.json`](../../../examples/linux-ubuntu24-cpu-only-9800x3d.json)。
+`lerobot_doctor.py` 是唯一的程序文件；四个启动器只负责装 `uv` 和 Python 3.12。所有阈值都是带来源注释的具名常量。常用开关：`--device cpu`、`--vram-cap 8`（模拟更小的显卡）、`--levels L1,L3`、`--no-sim`、`--port`、`--yes`、`--ascii`、`--skip-install`、`--use-current-env`、`--uninstall`、`--version`。真实机器的示例报告：[`examples/linux-ubuntu24-rtx5070ti-16gb.json`](../../../examples/linux-ubuntu24-rtx5070ti-16gb.json) 与 [`examples/linux-ubuntu24-cpu-only-9800x3d.json`](../../../examples/linux-ubuntu24-cpu-only-9800x3d.json)。
 
-所在地区下载慢时，把 `HF_ENDPOINT` 指向一个 Hugging Face 镜像。π0 系列不在阶梯里，因为它的 tokenizer 来自 Google 的一个受限仓库，需要账号并点同意许可。
+所在地区下载慢时，把 `HF_ENDPOINT` 指向一个 Hugging Face 镜像；启动器从 GitHub 拉不到 Python 3.12 时，设置 `UV_PYTHON_INSTALL_MIRROR`（机器上已经有 Python 3.12 的话直接用它，不下载）。π0 系列不在阶梯里，因为它的 tokenizer 来自 Google 的一个受限仓库，需要账号并点同意许可。
 
 ## 许可证
 

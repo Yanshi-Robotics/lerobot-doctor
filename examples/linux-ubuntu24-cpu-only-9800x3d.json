@@ -1,8 +1,14 @@
 {
   "schema": 1,
-  "tool_version": "0.1.0",
+  "tool_version": "0.1.6",
   "lerobot_version": "0.6.1",
-  "started_at": "2026-09-19T06:58:35",
+  "doctor_tag": null,
+  "launcher": null,
+  "python": {
+    "version": "3.12.3",
+    "executable": "<venv>/bin/python"
+  },
+  "started_at": "2026-09-20T11:03:23",
   "specs": {
     "system": "Linux",
     "os": "Ubuntu 24.04.4 LTS",
@@ -13,7 +19,7 @@
     "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
     "cpu_count": 16,
     "ram_gb": 49.6,
-    "disk_free_gb": 906.4,
+    "disk_free_gb": 885.7,
     "python": "3.12.3",
     "ffmpeg": true,
     "nvidia": [
@@ -27,10 +33,10 @@
     "other_gpus": [
       "AMD"
     ],
+    "gpu_query_failed": false,
     "accelerator": "cpu",
     "device_mem_gb": 49.6,
     "bf16": false,
-    "hf_token": true,
     "glibc": "glibc 2.39",
     "torch_backend": "cu128",
     "accelerator_note": ""
@@ -96,30 +102,40 @@
         "status": "PASS",
         "evidence": "measured",
         "params": 51597190,
-        "load_s": 0.7,
+        "load_s": 0.6,
         "n_action_steps": 100,
         "device": "cpu",
         "dtype": "float32",
-        "latency_ms": 159.2,
-        "p95_ms": 164.1,
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 77.3,
+        "p95_ms": 87.1,
         "budget_ms": 3333,
         "timed_calls": 5,
         "peak_gb": 1.47,
         "demo": {
           "status": "PASS",
           "steps": 300,
-          "seconds": 10.3,
-          "hz": 29.2,
-          "mean_abs_err_deg": 31.34
+          "of_steps": 300,
+          "seconds": 10.1,
+          "hz": 29.6,
+          "target_hz": 30,
+          "refill_ms": 74.3,
+          "decode_s": 1.9,
+          "mean_abs_err_deg": 27.77
         },
-        "seconds": 14.8,
-        "log": "/home/jeff/lerobot-doctor/logs/L1-infer.log",
+        "seconds": 15.8,
+        "log": "~/lerobot-doctor/logs/L1-infer.log",
         "demo_after_training": {
           "status": "PASS",
           "steps": 300,
-          "seconds": 10.2,
-          "hz": 29.5,
-          "mean_abs_err_deg": 14.41,
+          "of_steps": 300,
+          "seconds": 10.1,
+          "hz": 29.6,
+          "target_hz": 30,
+          "refill_ms": 61.2,
+          "decode_s": 1.8,
+          "mean_abs_err_deg": 16.23,
+          "extra_steps": 100,
           "trained_steps": 113
         }
       },
@@ -131,26 +147,31 @@
         "attempts": [
           {
             "batch": 8,
-            "update_s": 2.974,
-            "peak_gb": 6.83,
-            "loss": 36.3911
+            "update_s": 2.987,
+            "peak_gb": 7.04,
+            "loss": 25.5747
           }
         ],
         "params": 51597190,
         "batch": 8,
-        "update_s": 2.974,
-        "peak_gb": 6.83,
+        "update_s": 2.987,
+        "peak_gb": 7.04,
         "demo": {
           "status": "PASS",
           "steps": 300,
-          "seconds": 10.2,
-          "hz": 29.5,
-          "mean_abs_err_deg": 14.41,
+          "of_steps": 300,
+          "seconds": 10.1,
+          "hz": 29.6,
+          "target_hz": 30,
+          "refill_ms": 61.2,
+          "decode_s": 1.8,
+          "mean_abs_err_deg": 16.23,
+          "extra_steps": 100,
           "trained_steps": 113
         },
-        "seconds": 358.4,
-        "log": "/home/jeff/lerobot-doctor/logs/L1-train.log",
-        "hours": 23.2
+        "seconds": 364.6,
+        "log": "~/lerobot-doctor/logs/L1-train.log",
+        "hours": 23.3
       }
     },
     "L2": {
@@ -158,38 +179,25 @@
         "status": "TOO_SLOW",
         "evidence": "measured",
         "params": 277819846,
-        "load_s": 1.0,
+        "load_s": 1.1,
         "n_action_steps": 32,
         "device": "cpu",
         "dtype": "float32",
-        "latency_ms": 8863.4,
-        "p95_ms": 9087.2,
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 8703.0,
+        "p95_ms": 8900.4,
         "budget_ms": 1067,
         "timed_calls": 5,
-        "peak_gb": 2.4,
-        "seconds": 56.4,
-        "log": "/home/jeff/lerobot-doctor/logs/L2-infer.log"
+        "peak_gb": 2.42,
+        "seconds": 55.9,
+        "log": "~/lerobot-doctor/logs/L2-infer.log"
       },
       "train": {
-        "status": "PASS",
-        "evidence": "measured",
-        "device": "cpu",
-        "dtype": "float32",
-        "attempts": [
-          {
-            "batch": 8,
-            "update_s": 3.543,
-            "peak_gb": 10.67,
-            "loss": 1.071
-          }
-        ],
-        "params": 277819846,
-        "batch": 8,
-        "update_s": 3.543,
-        "peak_gb": 10.67,
-        "seconds": 51.5,
-        "log": "/home/jeff/lerobot-doctor/logs/L2-train.log",
-        "hours": 27.7
+        "status": "SKIPPED_SLOWER",
+        "evidence": "floor",
+        "reason": "slower_level_cloud:L1",
+        "zh": "L1 ACT 在这颗 CPU 上已经要上云（约 23 小时），本级更大只会更慢；推理照测，训练不测",
+        "en": "L1 ACT already needs the cloud on this CPU (~23 h); this level is larger and only slower. Inference is still measured, training is not"
       }
     },
     "L3": {
@@ -197,81 +205,92 @@
         "status": "PASS",
         "evidence": "measured",
         "params": 450046176,
-        "load_s": 30.5,
+        "load_s": 36.6,
         "n_action_steps": 50,
         "device": "cpu",
         "dtype": "float32",
-        "latency_ms": 389.2,
-        "p95_ms": 392.9,
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 383.8,
+        "p95_ms": 405.5,
         "budget_ms": 1667,
         "timed_calls": 5,
-        "peak_gb": 3.92,
+        "peak_gb": 3.9,
         "demo": {
-          "status": "PASS",
+          "status": "SLOW",
           "steps": 300,
+          "of_steps": 300,
           "seconds": 12.2,
-          "hz": 24.7,
-          "mean_abs_err_deg": 52.71
+          "hz": 24.6,
+          "target_hz": 30,
+          "refill_ms": 392.7,
+          "decode_s": 2.2,
+          "mean_abs_err_deg": 52.81
         },
-        "seconds": 47.7,
-        "log": "/home/jeff/lerobot-doctor/logs/L3-infer.log"
+        "seconds": 55.9,
+        "log": "~/lerobot-doctor/logs/L3-infer.log"
       },
       "train": {
-        "status": "PASS",
-        "evidence": "measured",
-        "device": "cpu",
-        "dtype": "float32",
-        "attempts": [
-          {
-            "batch": 8,
-            "update_s": 2.404,
-            "peak_gb": 5.28,
-            "loss": 0.8457
-          }
-        ],
-        "params": 450046176,
-        "batch": 8,
-        "update_s": 2.404,
-        "peak_gb": 5.28,
-        "seconds": 64.4,
-        "log": "/home/jeff/lerobot-doctor/logs/L3-train.log",
-        "hours": 18.8
+        "status": "SKIPPED_SLOWER",
+        "evidence": "floor",
+        "reason": "slower_level_cloud:L1",
+        "zh": "L1 ACT 在这颗 CPU 上已经要上云（约 23 小时），本级更大只会更慢；推理照测，训练不测",
+        "en": "L1 ACT already needs the cloud on this CPU (~23 h); this level is larger and only slower. Inference is still measured, training is not"
       }
     },
     "L4": {
       "infer": {
-        "status": "NOT_RUN",
-        "evidence": "not_run",
-        "reason": "user_skipped_pi",
-        "zh": "用户选择跳过 π0 系",
-        "en": "user chose to skip the pi0 family"
+        "status": "TOO_SLOW",
+        "evidence": "measured",
+        "params": 879738545,
+        "load_s": 13.0,
+        "n_action_steps": 30,
+        "device": "cpu",
+        "dtype": "float32",
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 2233.4,
+        "p95_ms": 2250.6,
+        "budget_ms": 1000,
+        "timed_calls": 5,
+        "peak_gb": 7.81,
+        "seconds": 29.1,
+        "log": "~/lerobot-doctor/logs/L4-infer.log"
       },
       "train": {
-        "status": "NOT_RUN",
-        "evidence": "not_run",
-        "reason": "infer_NOT_RUN",
-        "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
-        "en": "inference was not run (user chose to skip the pi0 family); same precondition"
+        "status": "SKIPPED_SLOWER",
+        "evidence": "floor",
+        "reason": "slower_level_cloud:L1",
+        "zh": "L1 ACT 在这颗 CPU 上已经要上云（约 23 小时），本级更大只会更慢；推理照测，训练不测",
+        "en": "L1 ACT already needs the cloud on this CPU (~23 h); this level is larger and only slower. Inference is still measured, training is not"
       }
     },
     "L5": {
       "infer": {
-        "status": "NOT_RUN",
-        "evidence": "not_run",
-        "reason": "user_skipped_pi",
-        "zh": "用户选择跳过 π0 系",
-        "en": "user chose to skip the pi0 family"
+        "status": "TOO_SLOW",
+        "evidence": "measured",
+        "params": 4224041072,
+        "load_s": 126.1,
+        "n_action_steps": 32,
+        "device": "cpu",
+        "dtype": "float32",
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 3823.6,
+        "p95_ms": 3836.9,
+        "budget_ms": 1067,
+        "timed_calls": 5,
+        "peak_gb": 26.4,
+        "seconds": 154.5,
+        "log": "~/lerobot-doctor/logs/L5-infer.log"
       },
       "train": {
-        "status": "NOT_RUN",
-        "evidence": "not_run",
-        "reason": "infer_NOT_RUN",
-        "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
-        "en": "inference was not run (user chose to skip the pi0 family); same precondition"
+        "status": "SKIPPED_SLOWER",
+        "evidence": "floor",
+        "reason": "slower_level_cloud:L1",
+        "zh": "L1 ACT 在这颗 CPU 上已经要上云（约 23 小时），本级更大只会更慢；推理照测，训练不测",
+        "en": "L1 ACT already needs the cloud on this CPU (~23 h); this level is larger and only slower. Inference is still measured, training is not"
       }
     }
   },
-  "seconds": 607,
+  "seconds": 685,
   "dataset": {
     "status": "PASS",
     "frames": 1197,
@@ -283,9 +302,9 @@
     "fps": 30,
     "task": "pink lego brick into the transparent box",
     "video_backend": "pyav",
-    "root": "/home/jeff/lerobot-doctor/dataset",
-    "seconds": 2.7,
-    "log": "/home/jeff/lerobot-doctor/logs/dataset.log"
+    "root": "~/lerobot-doctor/dataset",
+    "seconds": 2.4,
+    "log": "~/lerobot-doctor/logs/dataset.log"
   },
   "weights": {
     "L3": {
@@ -294,16 +313,20 @@
       "bytes": 914740972,
       "gated": false
     },
-    "L4": {},
+    "L4": {
+      "repo": "lerobot/xvla-base",
+      "params": 879738545,
+      "bytes": 3519087994,
+      "gated": false
+    },
     "L5": {
-      "repo": "lerobot/pi05_base",
-      "params": 3616757520,
-      "bytes": 14467176446,
+      "repo": "x-square-robot/wall-oss-flow",
+      "params": 4224041072,
+      "bytes": 8465083479,
       "gated": false
     }
   },
-  "gated": "no_access",
-  "finished_at": "2026-09-19T07:08:42",
+  "finished_at": "2026-09-20T11:14:48",
   "verdicts": {
     "install": "PASS",
     "levels": {
@@ -311,13 +334,13 @@
         "infer": {
           "mark": "ok",
           "evidence": "measured",
-          "zh": "本地实时推理（每块 159 ms，预算 3333 ms）；模拟执行 10 s ✅，控制 29 Hz",
-          "en": "real-time local inference (159 ms per chunk, budget 3333 ms); simulated task 10 s OK at 29 Hz"
+          "zh": "本地实时推理（每块 77 ms，p95 87，预算 3333 ms）；模拟执行 10.1 s 通过，控制 30 Hz",
+          "en": "real-time local inference (77 ms per chunk, p95 87, budget 3333 ms); simulated task 10.1 s OK at 30 Hz"
         },
         "train": {
           "mark": "warn",
-          "zh": "本地能训但太慢（batch 8，每步 2.97 s，参考任务约 23.2 小时）→ 建议上云",
-          "en": "trainable locally but too slow (batch 8, 2.97 s per step, ~23.2 h for the reference task) -> cloud recommended",
+          "zh": "本地能训但太慢（batch 8，每步 2.99 s，参考任务约 23.3 小时）→ 建议上云",
+          "en": "trainable locally but too slow (batch 8, 2.99 s per step, ~23.3 h for the reference task) -> cloud recommended",
           "cloud": true,
           "evidence": "measured"
         }
@@ -326,65 +349,65 @@
         "infer": {
           "mark": "bad",
           "evidence": "measured",
-          "zh": "本地推理达不到实时（每块 8863 ms，预算 1067 ms）",
-          "en": "local inference is not real-time (8863 ms per chunk, budget 1067 ms)"
+          "zh": "本地推理达不到实时（每块 8703 ms，p95 8900，预算 1067 ms）",
+          "en": "local inference is not real-time (8703 ms per chunk, p95 8900, budget 1067 ms)"
         },
         "train": {
           "mark": "warn",
-          "zh": "本地能训但太慢（batch 8，每步 3.54 s，参考任务约 27.7 小时）→ 建议上云",
-          "en": "trainable locally but too slow (batch 8, 3.54 s per step, ~27.7 h for the reference task) -> cloud recommended",
+          "evidence": "floor",
           "cloud": true,
-          "evidence": "measured"
+          "zh": "建议上云：L1 ACT 在这颗 CPU 上已经要上云（约 23 小时），本级更大只会更慢；推理照测，训练不测",
+          "en": "cloud recommended: L1 ACT already needs the cloud on this CPU (~23 h); this level is larger and only slower. Inference is still measured, training is not"
         }
       },
       "L3": {
         "infer": {
           "mark": "ok",
           "evidence": "measured",
-          "zh": "本地实时推理（每块 389 ms，预算 1667 ms）；模拟执行 10 s ✅，控制 25 Hz",
-          "en": "real-time local inference (389 ms per chunk, budget 1667 ms); simulated task 10 s OK at 25 Hz"
+          "zh": "本地实时推理（每块 384 ms，p95 406，预算 1667 ms）；模拟执行跑完但只有 25 Hz（目标 30），用了 12.2 s，每块等 393 ms",
+          "en": "real-time local inference (384 ms per chunk, p95 406, budget 1667 ms); simulated task finished but only 25 Hz (target 30), took 12.2 s, 393 ms wait per chunk"
         },
         "train": {
           "mark": "warn",
-          "zh": "本地能训但太慢（batch 8，每步 2.40 s，参考任务约 18.8 小时）→ 建议上云",
-          "en": "trainable locally but too slow (batch 8, 2.40 s per step, ~18.8 h for the reference task) -> cloud recommended",
+          "evidence": "floor",
           "cloud": true,
-          "evidence": "measured"
+          "zh": "建议上云：L1 ACT 在这颗 CPU 上已经要上云（约 23 小时），本级更大只会更慢；推理照测，训练不测",
+          "en": "cloud recommended: L1 ACT already needs the cloud on this CPU (~23 h); this level is larger and only slower. Inference is still measured, training is not"
         }
       },
       "L4": {
         "infer": {
-          "mark": "skip",
-          "evidence": "not_run",
-          "zh": "用户选择跳过 π0 系",
-          "en": "user chose to skip the pi0 family"
+          "mark": "bad",
+          "evidence": "measured",
+          "zh": "本地推理达不到实时（每块 2233 ms，p95 2251，预算 1000 ms）",
+          "en": "local inference is not real-time (2233 ms per chunk, p95 2251, budget 1000 ms)"
         },
         "train": {
-          "mark": "skip",
-          "evidence": "not_run",
-          "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
-          "en": "inference was not run (user chose to skip the pi0 family); same precondition",
-          "cloud": null
+          "mark": "warn",
+          "evidence": "floor",
+          "cloud": true,
+          "zh": "建议上云：L1 ACT 在这颗 CPU 上已经要上云（约 23 小时），本级更大只会更慢；推理照测，训练不测",
+          "en": "cloud recommended: L1 ACT already needs the cloud on this CPU (~23 h); this level is larger and only slower. Inference is still measured, training is not"
         }
       },
       "L5": {
         "infer": {
-          "mark": "skip",
-          "evidence": "not_run",
-          "zh": "用户选择跳过 π0 系",
-          "en": "user chose to skip the pi0 family"
+          "mark": "bad",
+          "evidence": "measured",
+          "zh": "本地推理达不到实时（每块 3824 ms，p95 3837，预算 1067 ms）",
+          "en": "local inference is not real-time (3824 ms per chunk, p95 3837, budget 1067 ms)"
         },
         "train": {
-          "mark": "skip",
-          "evidence": "not_run",
-          "zh": "推理阶段未测（用户选择跳过 π0 系），同一前提",
-          "en": "inference was not run (user chose to skip the pi0 family); same precondition",
-          "cloud": null
+          "mark": "warn",
+          "evidence": "floor",
+          "cloud": true,
+          "zh": "建议上云：L1 ACT 在这颗 CPU 上已经要上云（约 23 小时），本级更大只会更慢；推理照测，训练不测",
+          "en": "cloud recommended: L1 ACT already needs the cloud on this CPU (~23 h); this level is larger and only slower. Inference is still measured, training is not"
         }
       }
     },
     "basics": {
-      "mark": "ok"
+      "mark": "skip"
     },
     "route": {
       "rule": "R2",
@@ -394,8 +417,8 @@
     },
     "notes": [
       [
-        "torchcodec 不可用，视频解码走 pyav：正常，只是慢一点。",
-        "torchcodec unavailable, video decoding uses pyav: fine, just slower."
+        "torchcodec 不可用，视频解码走 pyav：不影响任何结论，只让下载后的准备阶段慢一些。",
+        "torchcodec unavailable, video decoding uses pyav: no verdict depends on it; only the preparation after downloads is slower."
       ]
     ]
   }

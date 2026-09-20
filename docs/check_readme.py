@@ -22,6 +22,11 @@ def tracked_files():
     return set(out.split())
 
 
+def code_blocks(text):
+    """[(language, body)] for every fenced block, in order."""
+    return [(lang, body) for lang, body in re.findall(r"^```(\w*)\n(.*?)^```", text, re.M | re.S)]
+
+
 def check(path, tracked, failures):
     rel = path.relative_to(ROOT)
     text = path.read_text(encoding="utf-8")
@@ -64,6 +69,17 @@ def main():
     counts = set(headings.values())
     if len(counts) > 1:
         failures.append("H2 counts differ across languages: " + ", ".join(f"{k}={v}" for k, v in headings.items()))
+    # The one-liners and the development commands are the same bytes in every language: a translation
+    # that drifts here ships a different command to one audience (the 0.1.2 launcher-tag slip).
+    blocks = {path.relative_to(ROOT): code_blocks(path.read_text(encoding="utf-8")) for path in readmes}
+    ref_name, ref = next(iter(blocks.items()))
+    for name, mine in list(blocks.items())[1:]:
+        if len(mine) != len(ref):
+            failures.append(f"{name}: {len(mine)} fenced blocks, {ref_name} has {len(ref)}")
+            continue
+        for i, ((lang_a, body_a), (lang_b, body_b)) in enumerate(zip(ref, mine), 1):
+            if lang_a in ("bash", "powershell") and (lang_a, body_a) != (lang_b, body_b):
+                failures.append(f"{name}: fenced block {i} ({lang_a}) differs from {ref_name}")
     if failures:
         print("README check failed:", file=sys.stderr)
         for failure in failures:

@@ -22,10 +22,12 @@ function Initialize-LeRobotDoctor {
     # Whatever a function lets fall into the pipeline becomes its return value, so every command in
     # here either goes to the host (Write-Host, Out-Host) or is discarded ($null = ...).
     $ErrorActionPreference = "Stop"   # function scope: does not leak into the user's session under iex
-    $DoctorTag = if ($env:DOCTOR_TAG) { $env:DOCTOR_TAG } else { "v0.1.5" }   # must equal the tag this file is published under
+    $ProgressPreference = "SilentlyContinue"   # Windows PowerShell 5.1 redraws a progress bar per byte otherwise; downloads crawl
+    $DoctorTag = if ($env:DOCTOR_TAG) { $env:DOCTOR_TAG } else { "v0.1.6" }   # must equal the tag this file is published under
     $Raw = "https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/$DoctorTag"
     $Issues = "https://github.com/Yanshi-Robotics/lerobot-doctor/issues/new"
     $HomeDir = Join-Path $HOME "lerobot-doctor"
+    $UvHome = if ($env:UV_INSTALL_DIR) { $env:UV_INSTALL_DIR } else { Join-Path $HOME ".local\bin" }   # where uv's installer puts uv.exe
     $step = "start"
     try {
         # UTF-8 so the bilingual output and the check marks render
@@ -45,7 +47,7 @@ function Initialize-LeRobotDoctor {
         } else {
             $Script = Join-Path $HomeDir "lerobot_doctor.py"
             Write-Host ((Get-Zh '\u4e0b\u8f7d\u4f53\u68c0\u7a0b\u5e8f') + " | downloading lerobot_doctor.py ($DoctorTag)")   # zh: downloading the doctor program
-            $null = Invoke-WebRequest -Uri "$Raw/lerobot_doctor.py" -OutFile $Script -UseBasicParsing
+            $null = Invoke-WebRequest -Uri "$Raw/lerobot_doctor.py" -OutFile $Script -UseBasicParsing -TimeoutSec 120
         }
 
         # 2. uv. Its installer runs in a child PowerShell: it calls `exit 1` on failure, which inside
@@ -53,19 +55,34 @@ function Initialize-LeRobotDoctor {
         $step = "install uv"
         $uv = Get-Command uv -ErrorAction SilentlyContinue
         if (-not $uv) {
-            $candidate = Join-Path $HOME ".local\bin\uv.exe"
+            $candidate = Join-Path $UvHome "uv.exe"
             if (-not (Test-Path $candidate)) {
                 Write-Host ((Get-Zh '\u5b89\u88c5 uv\uff08Python \u73af\u5883\u7ba1\u7406\u5668\uff0c\u7ea6 30 MB\uff09') + " | installing uv (~30 MB)")   # zh: installing uv (Python environment manager, ~30 MB)
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" | Out-Host
                 if ($LASTEXITCODE -ne 0) { throw "the uv installer exited with code $LASTEXITCODE (see its output above)" }
             }
-            $env:Path = (Join-Path $HOME ".local\bin") + ";" + $env:Path
+            $env:Path = $UvHome + ";" + $env:Path
         }
 
-        # 3. Python 3.12
-        $step = "install Python 3.12"
+        # 3. Python 3.12: one uv already knows (system or managed) is enough; the GitHub download of a
+        #    standalone build runs only when there is none, and a failed download is an error, not a shrug.
+        $step = "find Python 3.12"
         Write-Host ((Get-Zh '\u51c6\u5907 Python 3.12') + " | preparing Python 3.12")   # zh: preparing Python 3.12
-        uv python install 3.12 --quiet | Out-Host
+        $py = $null
+        $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"   # PS 5.1: a redirected native stderr would throw under Stop
+        try { $py = (& uv python find --no-project 3.12 2>$null | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $py = $null } }
+        finally { $ErrorActionPreference = $eap }
+        if ($py) {
+            Write-Host ("  " + (Get-Zh '\u5df2\u6709 Python 3.12\uff1a') + $py + " | using Python 3.12 at " + $py)   # zh: Python 3.12 already here:
+        } else {
+            $step = "install Python 3.12"
+            Write-Host ("  " + (Get-Zh '\u4e0b\u8f7d Python 3.12\uff08\u7ea6 30 MB\uff09') + " | downloading Python 3.12 (~30 MB)")   # zh: downloading Python 3.12 (~30 MB)
+            uv python install 3.12 | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                throw ((Get-Zh '\u4e0b\u8f7d Python 3.12 \u5931\u8d25\uff1b\u9632\u706b\u5899\u540e\u8bf7\u5148\u8bbe\u7f6e\u955c\u50cf\u53d8\u91cf UV_PYTHON_INSTALL_MIRROR \u518d\u91cd\u8dd1') + " | uv python install 3.12 exited with code $LASTEXITCODE; behind a firewall set UV_PYTHON_INSTALL_MIRROR to a python-build-standalone mirror and rerun")   # zh: the Python 3.12 download failed; behind a firewall set the mirror variable UV_PYTHON_INSTALL_MIRROR first and rerun
+            }
+        }
+        if (-not $env:DOCTOR_TAG) { $env:DOCTOR_TAG = $DoctorTag }   # the program records which tag ran it
         return $Script
     } catch {
         Write-Host ""
@@ -80,13 +97,18 @@ function Initialize-LeRobotDoctor {
 
 $launcherWasSet = $false
 if (-not $env:DOCTOR_LAUNCHER) { $env:DOCTOR_LAUNCHER = "ps1"; $launcherWasSet = $true }   # tells the program a launcher is around it (doctor.bat sets "bat")
+$tagWasSet = -not $env:DOCTOR_TAG
 $code = 1
 try {
     $Script = Initialize-LeRobotDoctor
     if ($Script) {
         # 4. run (rule 3). From here on the Python program handles its own errors: crash log + message.
-        uv run --python 3.12 --no-project $Script @args
-        $code = $LASTEXITCODE
+        if (Get-Command uv -ErrorAction SilentlyContinue) {
+            uv run --python 3.12 --no-project $Script @args
+            $code = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 }
+        } else {
+            Write-Host ((Get-Zh 'uv \u4e0d\u5728 PATH \u91cc\uff0c\u6ca1\u6cd5\u542f\u52a8\u4f53\u68c0\u7a0b\u5e8f') + " | uv is not on PATH; cannot start the program") -ForegroundColor Red   # zh: uv is not on PATH, cannot start the doctor program
+        }
         # 0 = done; 1 = a hard floor or the install failed (the program said so); 130 = Ctrl-C;
         # 70 = the program crashed and printed its own crash box. Anything else: uv never got it running.
         if ($code -notin 0, 1, 70, 130) {
@@ -95,6 +117,7 @@ try {
     }
 } finally {
     if ($launcherWasSet) { Remove-Item Env:DOCTOR_LAUNCHER -ErrorAction SilentlyContinue }
+    if ($tagWasSet) { Remove-Item Env:DOCTOR_TAG -ErrorAction SilentlyContinue }
 }
 if ($PSScriptRoot) {
     # Started as a file (doctor.bat, or right-click "Run with PowerShell"): the window closes when this

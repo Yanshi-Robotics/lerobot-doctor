@@ -12,6 +12,12 @@ if not exist "%~dp0doctor.ps1" (
 )
 set "DOCTOR_LAUNCHER=bat"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0doctor.ps1" %*
+set RC=%ERRORLEVEL%
 echo.
-echo 体检结束。按任意键关闭窗口 ^| Done. Press any key to close.
+if "%RC%"=="0" (
+    echo 体检结束。按任意键关闭窗口 ^| Done. Press any key to close.
+) else (
+    echo 体检没有正常结束（退出码 %RC%），看上面的输出。按任意键关闭窗口 ^| The check did not finish normally ^(exit code %RC%^), see the output above. Press any key to close.
+)
 pause >nul
+exit /b %RC%

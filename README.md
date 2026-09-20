@@ -33,7 +33,7 @@ irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor
 
 Prefer a download: get the ZIP of this repository, unpack it, then double-click `doctor.bat` on Windows, drag `doctor.command` into a Terminal window on macOS, or run `bash doctor.sh` on Linux.
 
-Expect 30 to 90 minutes, most of it downloads (about 7 GB of packages and 13 GB of model weights), and about 30 GB of free disk. The screen always shows what is happening; `Ctrl-C` stops the run and keeps the finished parts. If the program itself crashes, it writes `~/lerobot-doctor/logs/crash-<time>.log`, prints the path, and on Windows waits for Enter before the window closes; open an issue with that file and the report JSON. Model weights go to the standard Hugging Face cache, so a later LeRobot course reuses them.
+Expect 30 to 60 minutes on a machine with an NVIDIA GPU, 1 to 2.5 hours CPU-only; most of it is downloads (about 7 GB of packages and 13 GB of model weights), and about 30 GB of free disk is needed. The screen always shows what is happening; `Ctrl-C` stops the run and keeps the finished parts. If the program itself crashes, it writes `~/lerobot-doctor/logs/crash-<time>.log`, prints the path, and on Windows waits for Enter before the window closes; open an issue with that file and the report JSON. Model weights go to the standard Hugging Face cache, so a later LeRobot course reuses them.
 
 ## Overview
 
@@ -50,9 +50,9 @@ Every verdict carries its evidence. A "cannot" is printed only after a measured 
 - Runs on Linux, macOS (Apple Silicon and Intel) and Windows 10/11 from one pasted command; no Python setup by the user.
 - Installs `lerobot==0.6.1` into a private virtual environment with `uv`; a failed install is itself a finding, with the log.
 - Five levels, one representative per group of the LeRobot hardware guide, all downloadable without a Hugging Face account: ACT, Diffusion Policy, SmolVLA, X-VLA and WALL-OSS.
-- Per level: timed forward passes on `lerobot/svla_so101_pickplace`, a ten-second simulated task on a kinematic SO-101 (viser, `127.0.0.1:4604`), then real training steps with `lerobot`'s own optimizer and update function.
+- Per level: timed forward passes on `lerobot/svla_so101_pickplace` (the band is decided on the 95th percentile: the arm waits for the slowest chunk), a ten-second simulated task on a kinematic SO-101 (viser, `127.0.0.1:4604`; frames are decoded before the clock starts, so the demo measures the policy, not the video decoder), then real training steps with `lerobot`'s own optimizer and update function.
 - A fixed rule tree turns measurements into per-level verdicts and one SO-101 route: everything local, cloud training with local inference, or record-only.
-- Bilingual terminal output with progress every few seconds; the final report is printed twice, first in English, then in Chinese, and a machine-readable copy lands at `~/lerobot-doctor/report-<date>.json`.
+- Bilingual terminal output with progress every few seconds; the final report is printed twice, first in English, then in Chinese, and a machine-readable copy lands at `~/lerobot-doctor/report-<date>-<time>.json` (with a `report-latest.json` copy). The report records which launcher, tag and Python produced it.
 
 ## What it checks
 
@@ -69,23 +69,23 @@ Every verdict carries its evidence. A "cannot" is printed only after a measured 
 | L5 | WALL-OSS | Large VLA | `x-square-robot/wall-oss-flow` |
 
    A level is skipped without trying only when its weights cannot fit the device memory or a smaller level already ran out of memory. Being slow, timing out or failing to download never skips the next level.
-4. Training ladder, same order, only for levels whose forward pass fit. Batch sizes step down on out-of-memory. Step time is projected onto a reference task (50 episodes × 30 s × 30 fps, 5 epochs) and reported in hours.
-5. Verdicts. Inference: real-time, marginal, too slow, does not fit. Training: local, overnight, too slow (cloud), does not fit (cloud). Route: the highest level that runs locally decides between all-local, cloud training with local inference, and record-only.
+4. Training ladder, same order, only for levels whose forward pass fit. Batch sizes step down on out-of-memory. Step time is projected onto a reference task (50 episodes × 30 s × 30 fps, 5 epochs) and reported in hours; a probe that hits its time budget still projects from the steps it finished. On a CPU-only machine, once a smaller level already needs the cloud, the larger levels skip their training probe (their inference is still measured).
+5. Verdicts. Inference: real-time, marginal, too slow, does not fit. Training: local, overnight, too slow (cloud), does not fit (cloud). Route: the highest level that is fully local decides; if none is, the highest level whose inference runs locally does, with training in the cloud; if none does, record-only.
 
 ACT then trains for up to 300 extra steps (capped at five minutes) and drives the simulated arm a second time, so the page shows a policy this machine trained itself.
 
 ## Development
 
 ```bash
-python tests/test_doctor.py          # rule tree, ladder state machine, parsers; no network, no torch
-python lerobot_doctor.py --specs-only
-python docs/check_readme.py
-python docs/report_image.py           # redraw docs/images/report.png from the example report
+python3 tests/test_doctor.py          # rule tree, ladder state machine, protocol parser, process runner; no network, no torch
+python3 lerobot_doctor.py --specs-only
+python3 docs/check_readme.py
+python3 docs/report_image.py          # writes docs/images/report.png from the example report; needs Chrome and Pillow
 ```
 
-`lerobot_doctor.py` is the only program file; the four launchers only install `uv` and Python 3.12. Every threshold is a named constant with its source in a comment. Useful switches: `--device cpu`, `--vram-cap 8` (pretend a smaller GPU), `--no-sim`, `--port`, `--skip-install`, `--uninstall`. Example reports from real machines: [`examples/linux-ubuntu24-rtx5070ti-16gb.json`](examples/linux-ubuntu24-rtx5070ti-16gb.json) and [`examples/linux-ubuntu24-cpu-only-9800x3d.json`](examples/linux-ubuntu24-cpu-only-9800x3d.json).
+`lerobot_doctor.py` is the only program file; the four launchers only install `uv` and Python 3.12. Every threshold is a named constant with its source in a comment. Useful switches: `--device cpu`, `--vram-cap 8` (pretend a smaller GPU), `--levels L1,L3`, `--no-sim`, `--port`, `--yes`, `--ascii`, `--skip-install`, `--use-current-env`, `--uninstall`, `--version`. Example reports from real machines: [`examples/linux-ubuntu24-rtx5070ti-16gb.json`](examples/linux-ubuntu24-rtx5070ti-16gb.json) and [`examples/linux-ubuntu24-cpu-only-9800x3d.json`](examples/linux-ubuntu24-cpu-only-9800x3d.json).
 
-Set `HF_ENDPOINT` to a Hugging Face mirror if downloads are slow where you are. The pi0 family is not part of the ladder because its tokenizer comes from a gated Google repository that requires an account and a license click.
+Set `HF_ENDPOINT` to a Hugging Face mirror if downloads are slow where you are; set `UV_PYTHON_INSTALL_MIRROR` if the launcher cannot fetch Python 3.12 from GitHub (a Python 3.12 already on the machine is used as is). The pi0 family is not part of the ladder because its tokenizer comes from a gated Google repository that requires an account and a license click.
 
 ## License
 

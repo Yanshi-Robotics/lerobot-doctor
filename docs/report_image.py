@@ -48,7 +48,9 @@ def render_text(doc, example: Path, lang: str | None) -> str:
     if lang:
         doc.render_one(con, report, verdicts, lang, COLUMNS)
     else:
-        doc.render_report(con, report, verdicts, Path.home() / "lerobot-doctor" / "report-2026-09-19.json")
+        # the path line as a user sees it: the run's dated file, derived from the example's own timestamp
+        stamp = (report.get("started_at") or "2026-09-20T00:00")[:16].replace("T", "-").replace(":", "")
+        doc.render_report(con, report, verdicts, Path("~") / "lerobot-doctor" / f"report-{stamp}.json")
     stream.seek(0)
     return stream.read()
 

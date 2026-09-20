@@ -24,8 +24,10 @@ import json
 import math
 import os
 import platform
+import queue
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -42,13 +44,15 @@ from types import SimpleNamespace
 # Constants. Every threshold is named and carries its source; nothing is tuned per machine.
 # ----------------------------------------------------------------------------------------------
 
-TOOL_VERSION = "0.1.5"
+TOOL_VERSION = "0.1.6"
 LEROBOT_VERSION = "0.6.1"
 PYTHON_VERSION = "3.12"                         # lerobot 0.6.1: Requires-Python >=3.12
 VISER_SPEC = "viser[urdf]==1.1.0"               # same pin as the Season-1 course repo
 LEROBOT_EXTRAS = "smolvla,xvla,wallx,diffusion,dataset,feetech,accelerate-dep"
 WORK_DIR = Path.home() / "lerobot-doctor"
+LATEST_REPORT_NAME = "report-latest.json"       # a copy of the newest report; the dated files are never overwritten
 DEFAULT_PORT = 4604                             # yanshirobotics 46xx range; 127.0.0.1 only
+HF_OFFICIAL_ENDPOINT = "https://huggingface.co"  # the only host that gets the user's token (a mirror does not)
 ISSUES_URL = "https://github.com/Yanshi-Robotics/lerobot-doctor/issues/new"
 EXIT_CRASH = 70                                 # sysexits.h EX_SOFTWARE: the tool itself failed, not the machine
 WINDOWS_11_FIRST_BUILD = 22000                  # platform.win32_ver() says "10" for Windows 11; the build tells them apart
@@ -70,9 +74,11 @@ WARMUP_CPU, TIMED_CPU = 1, 5
 
 DEMO_SECONDS = 10          # simulated task length
 DEMO_WALL_CAP_S = 60       # a slow model may take longer; we cap the wall clock
+DEMO_OK_RATIO = 0.9        # the demo kept up at >= 90 % of CONTROL_FPS: a sleep-paced 30 Hz loop loses 1-2 Hz to scheduler jitter alone
 DEMO_FOLLOW_ALPHA = 0.35   # first-order low-pass: how fast the simulated joints follow a target
 ACT_DEMO_STEPS = 300       # extra ACT training steps so the second demo shows a learning model
 ACT_DEMO_BUDGET_S = 300    # ...but never more than five minutes of it (a CPU may need seconds per step)
+ACT_DEMO_MIN_STEPS = 30    # fewer extra steps than this change nothing visible; the second demo is skipped and says so
 
 TRAIN_WARMUP, TRAIN_TIMED = 3, 10
 REF_FRAMES = 45_000        # HF hardware guide: 50 episodes x 30 s x 30 fps
@@ -87,11 +93,17 @@ HEARTBEAT_SILENCE_S = 2.0
 NON_TTY_HEARTBEAT_S = 30.0     # log files: one "still working" line per half minute, never a stream
 BAR_WIDTH = 24                 # cells in a progress bar
 BAR_LOG_STEP = 25              # log files: a bar line only at 25 / 50 / 75 / 100 %
-CHILD_POLL_S = 0.05
+CHILD_POLL_S = 0.05            # how often the parent checks a probe's deadline, output or not
+CHILD_WAIT_AFTER_KILL_S = 10    # SIGKILL / taskkill is not instant on a child that is swapping out tens of GB
+UV_VENV_TIMEOUT_S = 10 * 60     # `uv venv --seed`: local work once Python 3.12 is there
+UV_INSTALL_TIMEOUT_S = 60 * 60  # one `uv pip install` attempt: ~4 GB of wheels at 1 MB/s is ~70 min; a retry resumes from uv's cache
+PROBE_TIMEOUT_S = 600           # importing torch + lerobot in a fresh venv, cold disk
 UV_HTTP_TIMEOUT_S = 600    # uv's default 30 s drops 600 MB CUDA wheels on slow links
 INSTALL_ATTEMPTS = 3       # network hiccups are the most common student failure; uv caches finished wheels
 HF_HTTP_TIMEOUT_S = 60
 HF_HTTP_ATTEMPTS = 2
+HF_HUB_DOWNLOAD_TIMEOUT_S = 60  # huggingface_hub's default read timeout is 10 s; 13 GB of weights on a home link stall longer
+HF_HUB_ETAG_TIMEOUT_S = 30
 
 DATASET_REPO = "lerobot/svla_so101_pickplace"   # official SO-101 pick-place recording, v3.0
 DATASET_EPISODES = [0, 1, 2, 3, 4]
@@ -147,14 +159,40 @@ LEVEL_BY_ID = {lv.id: lv for lv in LEVELS}
 
 STATUS_MEASURED_OK = {"PASS", "MARGINAL"}
 STATUS_MEASURED_FAIL = {"TOO_SLOW", "FAIL_OOM", "FAIL_RAM"}
-STATUS_FLOOR = {"SKIPPED_FLOOR"}
+STATUS_FLOOR = {"SKIPPED_FLOOR", "SKIPPED_SLOWER"}   # SKIPPED_SLOWER is a training-only speed statement, never a memory one
 STATUS_NOT_RUN = {"TIMEOUT", "FAIL_DEP", "FAIL_DOWNLOAD", "BLOCKED_GATED", "FAIL_CRASH", "NOT_RUN"}
-MEMORY_FAILS = {"FAIL_OOM", "FAIL_RAM", "SKIPPED_FLOOR"}
+MEMORY_FAILS = {"FAIL_OOM", "FAIL_RAM", "SKIPPED_FLOOR"}   # read to infer "the forward pass did not fit" from an inference status
+BI_SEP = "  |  "
 
 
 def bi(zh: str, en: str) -> str:
     """One bilingual line. Chinese first, English after a separator."""
-    return f"{zh}  |  {en}"
+    return f"{zh}{BI_SEP}{en}"
+
+
+def split_bi(text: str) -> tuple[str, str]:
+    """Undo bi(): (zh, en) from one bilingual line; a plain line serves as both."""
+    zh, sep, en = text.partition(BI_SEP)
+    return (zh, en) if sep else (text, text)
+
+
+def percentile(values, q: float) -> float:
+    """Linear interpolation between order statistics (numpy's default). `sorted(v)[int(q * (n - 1))]`
+    picked the 80th percentile at n = 5."""
+    s = sorted(values)
+    if not s:
+        raise ValueError("percentile of nothing")
+    k = (len(s) - 1) * q
+    f = math.floor(k)
+    c = min(f + 1, len(s) - 1)
+    return s[f] + (s[c] - s[f]) * (k - f)
+
+
+def provenance() -> dict:
+    """Who ran this file: the launcher and the tag it fetched (both exported by the launchers), and
+    the interpreter. A report that behaves oddly is attributed with this."""
+    return {"doctor_tag": os.environ.get("DOCTOR_TAG"), "launcher": os.environ.get("DOCTOR_LAUNCHER"),
+            "python": {"version": sys.version.split()[0], "executable": sys.executable}}
 
 
 def gb(nbytes) -> float:
@@ -428,6 +466,7 @@ def collect_specs() -> dict:
         "ffmpeg": bool(shutil.which("ffmpeg")),
         "nvidia": [],
         "other_gpus": [],
+        "gpu_query_failed": False,  # Windows: the WMI query itself failed, so "no other GPU" is unknown, not false
         "accelerator": "cpu",       # cuda | mps | cpu
         "device_mem_gb": None,      # VRAM (cuda), unified memory (mps), RAM (cpu)
         "bf16": False,
@@ -468,9 +507,15 @@ def collect_specs() -> dict:
         except Exception:  # noqa: BLE001 - best effort on a foreign registry
             specs["cpu"] = platform.processor()
         specs["ram_gb"] = _windows_ram_gb()
-        ps = run_cmd(["powershell", "-NoProfile", "-Command",
-                      "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"])
-        specs["other_gpus"] = [g.strip() for g in ps.splitlines() if g.strip() and "NVIDIA" not in g]
+        try:
+            ps = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                 "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"],
+                                capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace")
+            specs["gpu_query_failed"] = ps.returncode != 0
+            if ps.returncode == 0:
+                specs["other_gpus"] = [g.strip() for g in ps.stdout.splitlines() if g.strip() and "NVIDIA" not in g]
+        except (OSError, subprocess.SubprocessError):   # a cold laptop can take longer than 20 s to answer WMI
+            specs["gpu_query_failed"] = True
     smi = find_nvidia_smi()
     if smi:
         specs["nvidia"] = parse_nvidia_smi(run_cmd(
@@ -602,7 +647,7 @@ def hf_token() -> str | None:
 
 def hf_get_json(path: str, timeout=HF_HTTP_TIMEOUT_S) -> dict | list | None:
     req = urllib.request.Request(f"{HF_ENDPOINT}{path}", headers={"User-Agent": f"lerobot-doctor/{TOOL_VERSION}"})
-    tok = hf_token()
+    tok = hf_token() if HF_ENDPOINT == HF_OFFICIAL_ENDPOINT else None   # a mirror never sees the token; these endpoints are public anyway
     if tok:
         req.add_header("Authorization", f"Bearer {tok}")
     for _ in range(HF_HTTP_ATTEMPTS):
@@ -629,6 +674,21 @@ def hf_model_summary(repo: str) -> dict | None:
 # Stage A printing.
 # ----------------------------------------------------------------------------------------------
 
+# Why the run is on the CPU although the machine has some GPU. Printed in stage 1 and again in the
+# final report, so the box a user shares says the same thing.
+ACCELERATOR_NOTES = {
+    "driver_too_old": ("NVIDIA 驱动低于 570.86：这次按 CPU 测，GPU 一列全部记「未测」。升级驱动后重跑。",
+                       "NVIDIA driver below 570.86: testing on CPU; the GPU column is 'not tested'. Update the driver and rerun."),
+    "rosetta": ("Python 跑在 Rosetta 下（x86 版），MPS 不可用。装 arm64 版 Python 后重跑。",
+                "Python runs under Rosetta (x86 build); MPS unavailable. Install arm64 Python and rerun."),
+    "macos_too_old": ("macOS 低于 12.3，MPS 不可用，按 CPU 测。", "macOS below 12.3: no MPS, testing on CPU."),
+    "intel_mac": ("Intel Mac：无加速器，按 CPU 测；torchcodec 无轮子，LeRobot 会自动改用 pyav。",
+                  "Intel Mac: no accelerator, testing on CPU; no torchcodec wheel, LeRobot falls back to pyav."),
+    "non_nvidia_gpu": ("检测到非 NVIDIA 显卡（含核显）：PyTorch 在这台机器上不用它，所有模型按 CPU 测。",
+                       "A non-NVIDIA GPU (integrated ones included) was found: PyTorch does not use it here; every model is tested on the CPU."),
+}
+
+
 def print_specs(con: Console, specs: dict):
     con.line(bi("系统体检 · 第一段（只读，不安装任何东西）", "System check, stage 1 (read-only, installs nothing)"))
     rows = [
@@ -638,13 +698,15 @@ def print_specs(con: Console, specs: dict):
         ("内存 RAM", f"{specs['ram_gb']} GB" if specs["ram_gb"] else "?"),
         ("磁盘剩余 Free disk", f"{specs['disk_free_gb']} GB"),
         ("Python", specs["python"]),
-        ("ffmpeg", "yes" if specs["ffmpeg"] else "no (video decode falls back to pyav)"),
+        ("ffmpeg", "yes" if specs["ffmpeg"] else "no"),   # the CLI binary; which video decoder torch ends up with is measured later
     ]
     for g in specs["nvidia"]:
         rows.append(("显卡 GPU (NVIDIA)", f"{g['name']} · {g['vram_gb']} GB · driver {g['driver']}"
                                           + (f" · compute {g['compute_cap']}" if g['compute_cap'] else "")))
     for g in specs["other_gpus"]:
         rows.append(("显卡 GPU (other)", g))
+    if specs.get("gpu_query_failed"):
+        rows.append(("显卡 GPU (other)", "未能查询 / could not query"))
     acc = specs["accelerator"]
     acc_text = {"cuda": f"CUDA ({specs['device_mem_gb']} GB VRAM, bf16 {'yes' if specs['bf16'] else 'no'})",
                 "mps": f"Apple MPS ({specs['device_mem_gb']} GB unified memory)",
@@ -653,19 +715,8 @@ def print_specs(con: Console, specs: dict):
     width = max(dwidth(r[0]) for r in rows)
     for k, v in rows:
         con.line(f"  {pad(k, width)}  {v}")
-    notes = {
-        "driver_too_old": ("NVIDIA 驱动低于 570.86：这次按 CPU 测，GPU 一列全部记「未测」。升级驱动后重跑。",
-                           "NVIDIA driver below 570.86: testing on CPU; the GPU column is 'not tested'. Update the driver and rerun."),
-        "rosetta": ("Python 跑在 Rosetta 下（x86 版），MPS 不可用。装 arm64 版 Python 后重跑。",
-                    "Python runs under Rosetta (x86 build); MPS unavailable. Install arm64 Python and rerun."),
-        "macos_too_old": ("macOS 低于 12.3，MPS 不可用，按 CPU 测。", "macOS below 12.3: no MPS, testing on CPU."),
-        "intel_mac": ("Intel Mac：无加速器，按 CPU 测；torchcodec 无轮子，LeRobot 会自动改用 pyav。",
-                      "Intel Mac: no accelerator, testing on CPU; no torchcodec wheel, LeRobot falls back to pyav."),
-        "non_nvidia_gpu": ("检测到非 NVIDIA 独显：本工具不覆盖 AMD/Intel GPU 路线，按 CPU 测。",
-                           "Non-NVIDIA GPU found: this tool does not cover AMD/Intel GPU paths; testing on CPU."),
-    }
-    if specs.get("accelerator_note") in notes:
-        con.item("warn", *notes[specs["accelerator_note"]])
+    if specs.get("accelerator_note") in ACCELERATOR_NOTES:
+        con.item("warn", *ACCELERATOR_NOTES[specs["accelerator_note"]])
     if specs.get("wsl"):
         con.item("info", "WSL：GPU 一般可用；USB 串口要用 usbipd 转发进来。", "WSL: GPU usually works; USB serial needs usbipd forwarding.")
 
@@ -694,63 +745,172 @@ def find_uv() -> str | None:
     found = shutil.which("uv")
     if found:
         return found
-    for cand in (Path.home() / ".local" / "bin" / "uv", Path.home() / ".cargo" / "bin" / "uv",
-                 Path.home() / ".local" / "bin" / "uv.exe"):
-        if cand.exists():
-            return str(cand)
+    home = Path.home()
+    dirs = [home / ".local" / "bin", home / ".cargo" / "bin"]
+    if platform.system() == "Windows":
+        dirs.append(Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local"))) / "Programs" / "uv")
+    for d in dirs:
+        for name in ("uv", "uv.exe"):
+            if (d / name).exists():
+                return str(d / name)
     return None
 
 
 def stream_process(cmd, con: Console, log_path: Path, env=None, cwd=None, timeout=None, on_line=None) -> int:
-    """Run a command, mirror its output to the console (and a log), keep the heartbeat alive."""
+    """Run a command, mirror its output to the console (and a log), keep the heartbeat alive.
+
+    The deadline is checked every CHILD_POLL_S whether or not the child prints: a child that hangs in
+    silence (a stalled download, a wedged CUDA init) is killed like a chatty one. Returns the exit code,
+    or -999 on timeout; whatever the child had written by then, terminated or not, still reaches on_line."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as log:
         log.write(f"\n$ {' '.join(map(str, cmd))}\n")
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=cwd,
-                                bufsize=0)
-        start = time.monotonic()
-        buf = b""
-        while True:
-            chunk = proc.stdout.read1(4096) if hasattr(proc.stdout, "read1") else proc.stdout.read(1)
-            if not chunk:
-                if proc.poll() is not None:
-                    break
-                time.sleep(CHILD_POLL_S)
-                continue
-            buf += chunk
+                                bufsize=0, start_new_session=platform.system() != "Windows")
+        q: queue.Queue = queue.Queue()
+
+        def pump():   # the only thread that touches the pipe; a raw pipe read returns as soon as any bytes exist
+            try:
+                while True:
+                    chunk = proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    q.put(chunk)
+            except (OSError, ValueError):   # the pipe was closed under us after a kill
+                pass
+            q.put(None)
+
+        threading.Thread(target=pump, name="child-stdout", daemon=True).start()
+
+        def deliver(seg: bytes, is_cr: bool):
+            text = seg.decode("utf-8", errors="replace")
+            log.write(text + "\n")
+            if on_line and on_line(text, is_cr):
+                return
+            if is_cr:
+                con.transient(text[-200:])
+            elif text.strip():
+                con.raw(text + "\n")
+
+        def feed(buf: bytes) -> bytes:
             while True:
                 m = re.search(rb"[\r\n]", buf)
                 if not m:
+                    return buf
+                deliver(buf[:m.start()], buf[m.start():m.end()] == b"\r")
+                buf = buf[m.end():]
+
+        deadline = time.monotonic() + timeout if timeout else None
+        buf, timed_out = b"", False
+        try:
+            while True:
+                try:
+                    chunk = q.get(timeout=CHILD_POLL_S)
+                except queue.Empty:
+                    chunk = b""
+                if chunk is None:
                     break
-                seg, sep, buf = buf[:m.start()], buf[m.start():m.end()], buf[m.end():]
-                text = seg.decode("utf-8", errors="replace")
-                log.write(text + "\n")
-                if on_line and on_line(text, sep == b"\r"):
-                    continue
-                if sep == b"\r":
-                    con.transient(text[-200:])
-                elif text.strip():
-                    con.raw(text + "\n")
-            if timeout and time.monotonic() - start > timeout:
+                if chunk:
+                    buf = feed(buf + chunk)
+                if deadline is not None and time.monotonic() > deadline:
+                    timed_out = True
+                    break
+            if timed_out:
                 kill_tree(proc)
-                log.write("\n[lerobot-doctor] TIMEOUT\n")
-                return -999
+                while True:   # what the reader had already queued before the kill
+                    try:
+                        chunk = q.get_nowait()
+                    except queue.Empty:
+                        break
+                    if chunk is None:
+                        break
+                    buf = feed(buf + chunk)
+        except BaseException:   # Ctrl-C: the child sits in its own session and would not hear the terminal's
+            kill_tree(proc)
+            _reap(proc)
+            raise
         if buf.strip():
-            text = buf.decode("utf-8", errors="replace")
-            log.write(text + "\n")
-            if not (on_line and on_line(text, False)):
-                con.raw(text + "\n")
-        return proc.wait()
+            deliver(buf, False)   # an unterminated last line (a @@progress cut by the kill) still counts
+        if timed_out:
+            log.write("\n[lerobot-doctor] TIMEOUT\n")
+            _reap(proc)
+            return -999
+        rc = proc.wait()
+        try:
+            proc.stdout.close()
+        except (OSError, ValueError):
+            pass
+        return rc
+
+
+def _reap(proc: subprocess.Popen):
+    """After a kill: close our end of the pipe and wait, so no zombie and no ResourceWarning mid-report."""
+    try:
+        proc.stdout.close()
+    except (OSError, ValueError):
+        pass
+    try:
+        proc.wait(timeout=CHILD_WAIT_AFTER_KILL_S)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def kill_tree(proc: subprocess.Popen):
+    """The child and everything it spawned. POSIX: the child was started in its own session, so its
+    process group id is its pid. Windows: taskkill /T walks the tree."""
     try:
         if platform.system() == "Windows":
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
         else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
             proc.kill()
+        except OSError:
+            pass
+
+
+def log_since(log_path: Path, offset: int) -> str:
+    """The bytes a log gained after `offset`: a retry must be classified by its own output, not the
+    previous attempt's (the file is appended across attempts and across runs)."""
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(offset)
+            return f.read().decode("utf-8", errors="replace")
     except OSError:
-        pass
+        return ""
+
+
+def import_probe(py: Path) -> tuple[int, dict | None, str]:
+    """Run IMPORT_PROBE with `py`: (returncode, the JSON it printed or None, stderr tail). The JSON is
+    the last line that parses, because torch or a library may print after it."""
+    try:
+        probe = subprocess.run([str(py), "-c", IMPORT_PROBE], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=PROBE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return -1, None, f"import probe did not finish in {PROBE_TIMEOUT_S} s"
+    except OSError as e:
+        return -1, None, str(e)
+    info = None
+    for line in reversed((probe.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                info = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+    return probe.returncode, info, (probe.stderr or "")[-2000:]
+
+
+def venv_python_version(py: Path) -> str | None:
+    """'3.12' for the interpreter at `py`, None when it cannot even start."""
+    try:
+        out = subprocess.run([str(py), "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        return out.stdout.strip() if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def build_env(con: Console, specs: dict, report: dict, args) -> Path | None:
@@ -766,11 +926,22 @@ def build_env(con: Console, specs: dict, report: dict, args) -> Path | None:
                  "uv not found. Start with doctor.sh / doctor.ps1, which installs uv first.")
         return None
     backend = specs["torch_backend"]
+    log_path = logs / "install.log"
+    if py.exists():
+        have = venv_python_version(py)
+        if have != PYTHON_VERSION:   # a venv left by an older tool version, or one whose Python is gone
+            con.item("warn", f"已有环境的 Python 是 {have or '坏的'}，不是 {PYTHON_VERSION}：重建",
+                     f"the existing env has Python {have or 'broken'}, not {PYTHON_VERSION}: rebuilding it")
+            shutil.rmtree(venv, ignore_errors=True)
     if not py.exists():
         con.activity(bi("创建虚拟环境", "creating virtualenv"))
-        rc = stream_process([uv, "venv", str(venv), "--python", PYTHON_VERSION, "--seed"], con, logs / "install.log")
+        rc = stream_process([uv, "venv", str(venv), "--python", PYTHON_VERSION, "--seed"], con, log_path,
+                            timeout=UV_VENV_TIMEOUT_S)
         if rc != 0:
-            install.update(status="FAIL_CRASH", reason=f"uv venv exited {rc}", log=str(logs / "install.log"))
+            # uv fetches Python from GitHub when the machine has no 3.12; that is the usual failure here,
+            # and it is uv's, not LeRobot's and not the machine's.
+            install.update(status="FAIL_CRASH", reason=f"uv venv exited {rc}", log=str(log_path),
+                           hint="UV_PYTHON_INSTALL_MIRROR")
             return None
     spec = f"lerobot[{LEROBOT_EXTRAS}]=={LEROBOT_VERSION}"
     cmd = [uv, "pip", "install", "--python", str(py), spec, VISER_SPEC]
@@ -780,27 +951,29 @@ def build_env(con: Console, specs: dict, report: dict, args) -> Path | None:
     t0 = time.monotonic()
     env = dict(os.environ, UV_HTTP_TIMEOUT=str(UV_HTTP_TIMEOUT_S))
     for attempt in range(1, INSTALL_ATTEMPTS + 1):
-        rc = stream_process(cmd, con, logs / "install.log", env=env)
+        offset = log_path.stat().st_size if log_path.exists() else 0
+        rc = stream_process(cmd, con, log_path, env=env, timeout=UV_INSTALL_TIMEOUT_S)
         if rc == 0:
             break
-        tail = (logs / "install.log").read_text(encoding="utf-8", errors="replace")[-4000:].lower()
-        if attempt < INSTALL_ATTEMPTS and ("timeout" in tail or "timed out" in tail or "connection" in tail):
+        tail = log_since(log_path, offset)[-4000:].lower()   # this attempt's output only
+        if attempt < INSTALL_ATTEMPTS and (rc == -999 or "timeout" in tail or "timed out" in tail or "connection" in tail):
             con.item("warn", f"下载超时，重试 {attempt}/{INSTALL_ATTEMPTS - 1}（已下好的包不重下）",
                      f"download timed out, retry {attempt}/{INSTALL_ATTEMPTS - 1} (finished packages are cached)")
             continue
         break
     install["seconds"] = round(time.monotonic() - t0)
     install["torch_backend"] = backend
-    install["log"] = str(logs / "install.log")
+    install["log"] = str(log_path)
     if rc != 0:
-        install.update(status="FAIL", reason=f"uv pip install exited {rc}")
+        install.update(status="FAIL", reason=f"uv pip install exited {rc}" if rc != -999 else f"uv pip install did not finish in {UV_INSTALL_TIMEOUT_S // 60} min")
         return None
-    probe = subprocess.run([str(py), "-c", IMPORT_PROBE], capture_output=True, text=True, timeout=600)
-    if probe.returncode != 0:
-        install.update(status="FAIL", reason="import failed", stderr=probe.stderr[-2000:])
-        (logs / "install.log").open("a", encoding="utf-8").write(probe.stderr)
+    rc, info, err = import_probe(py)
+    if rc != 0 or info is None:
+        install.update(status="FAIL", reason="import failed" if rc != 0 else "import probe printed no result", stderr=err)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(err)
         return None
-    install.update(status="PASS", **json.loads(probe.stdout.strip().splitlines()[-1]))
+    install.update(status="PASS", **info)
     return py
 
 
@@ -824,9 +997,10 @@ print(json.dumps(out))
 
 def infer_precheck(level: Level, results: dict, specs: dict, weights: dict, dtype: str) -> dict | None:
     """Decide whether to *skip* the inference probe. Returns a result dict or None (= run it)."""
-    # floor 1: weights alone do not fit
+    # floor 1: weights alone do not fit. On a CPU "device memory" is the RAM: one check, one name.
     w = weights.get(level.id) or {}
-    fl = weight_floor(level, w.get("params"), dtype, specs.get("device_mem_gb"), specs.get("ram_gb"))
+    dev_mem = specs.get("device_mem_gb") if specs.get("accelerator") != "cpu" else None
+    fl = weight_floor(level, w.get("params"), dtype, dev_mem, specs.get("ram_gb"))
     if fl:
         return {"status": "SKIPPED_FLOOR", "evidence": "floor", "reason": "weights_exceed_memory", **fl}
     # floor 2: memory monotonic - a smaller level already failed on memory (same device, same dtype)
@@ -835,7 +1009,7 @@ def infer_precheck(level: Level, results: dict, specs: dict, weights: dict, dtyp
         if other.id == level.id:
             continue
         r = results.get(other.id, {}).get("infer") or {}
-        if r.get("status") in ("FAIL_OOM", "FAIL_RAM") and (weights.get(other.id) or {}).get("params", 0) <= my_params \
+        if r.get("status") in ("FAIL_OOM", "FAIL_RAM") and ((weights.get(other.id) or {}).get("params") or 0) <= my_params \
                 and r.get("dtype", dtype) == dtype and my_params:
             return {"status": "SKIPPED_FLOOR", "evidence": "floor", "reason": f"smaller_level_oom:{other.id}",
                     "zh": f"{other.id} {other.label} 已装不下（{r['status']}），本级权重更大",
@@ -853,14 +1027,19 @@ def train_precheck(level: Level, results: dict) -> dict | None:
     if st in STATUS_NOT_RUN:
         return {"status": "NOT_RUN", "evidence": "not_run", "reason": f"infer_{st}",
                 "zh": f"推理阶段未测（{inf.get('zh', st)}），同一前提", "en": f"inference was not run ({inf.get('en', st)}); same precondition"}
-    for other in LEVELS:   # memory monotonic for training too
-        if other.id == level.id:
-            continue
+    smaller = [other for other in LEVELS if LEVELS.index(other) < LEVELS.index(level)]
+    for other in smaller:   # memory monotonic for training too
         r = results.get(other.id, {}).get("train") or {}
-        if r.get("status") in ("FAIL_OOM", "FAIL_RAM") and LEVELS.index(other) < LEVELS.index(level) \
-                and r.get("params", 0) <= (inf.get("params") or 0):
+        if r.get("status") in ("FAIL_OOM", "FAIL_RAM") and (r.get("params") or 0) <= (inf.get("params") or 0):
             return {"status": "SKIPPED_FLOOR", "evidence": "floor", "reason": f"smaller_level_oom:{other.id}",
                     "zh": f"{other.id} {other.label} batch 1 都训不了，本级更大", "en": f"{other.id} {other.label} failed even at batch 1; this level is larger"}
+    for other in smaller:   # speed monotonic on a CPU/MPS: a smaller level that already needs the cloud settles the larger ones
+        r = results.get(other.id, {}).get("train") or {}
+        if r.get("device") in ("cpu", "mps") and r.get("status") in ("PASS", "TIMEOUT") and r.get("hours") is not None \
+                and (r["hours"] > OVERNIGHT_H or r.get("batch") == 1):
+            return {"status": "SKIPPED_SLOWER", "evidence": "floor", "reason": f"slower_level_cloud:{other.id}",
+                    "zh": f"{other.id} {other.label} 在这颗 {r['device'].upper()} 上已经要上云（约 {r['hours']:.0f} 小时），本级更大只会更慢；推理照测，训练不测",
+                    "en": f"{other.id} {other.label} already needs the cloud on this {r['device'].upper()} (~{r['hours']:.0f} h); this level is larger and only slower. Inference is still measured, training is not"}
     return None
 
 
@@ -869,8 +1048,10 @@ def classify_exit(returncode: int, log_text: str) -> str:
     low = log_text.lower()
     if "out of memory" in low or "outofmemoryerror" in low or "mps backend out of memory" in low:
         return "FAIL_OOM"
-    if returncode in (-9, 137) or returncode == 3221225477 or returncode == -1073741819:  # SIGKILL / 0xC0000005
+    if returncode in (-9, 137):   # SIGKILL: the OOM killer, on Linux, is the usual sender
         return "FAIL_RAM"
+    if returncode in (3221225477, -1073741819):   # 0xC0000005 access violation: a DLL/driver/CPU-flag problem of the stack, not memory
+        return "FAIL_CRASH"
     if "is required but not installed" in low or "no module named" in low:
         return "FAIL_DEP"
     if "gated" in low or "401 client error" in low or "403 client error" in low:
@@ -896,31 +1077,96 @@ def projected_hours(update_s: float, batch: int) -> float:
     return steps * update_s / 3600
 
 
+def infer_summary(lat: list[float], n_action_steps: int) -> dict:
+    """Pure. The band is decided on p95: the arm waits for the slowest chunk, not the typical one.
+    The median stays in the JSON and the table."""
+    med, p95 = statistics.median(lat), percentile(lat, 0.95)
+    status, budget = realtime_status(p95, n_action_steps)
+    return {"status": status, "latency_ms": round(med * 1000, 1), "p95_ms": round(p95 * 1000, 1),
+            "budget_ms": round(budget * 1000), "timed_calls": len(lat)}
+
+
+def demo_summary(done: int, n_avail: int, elapsed_s: float, refill_lat: list[float]) -> dict:
+    """Pure. PASS = every step and at least DEMO_OK_RATIO of the target rate; SLOW = finished but
+    below it (the arm stalls at every chunk refill); TOO_SLOW = cut off by the wall-clock cap."""
+    hz = done / elapsed_s if elapsed_s > 0 else 0.0
+    if done < n_avail:
+        status = "TOO_SLOW"
+    elif hz >= DEMO_OK_RATIO * CONTROL_FPS:
+        status = "PASS"
+    else:
+        status = "SLOW"
+    return {"status": status, "steps": done, "of_steps": n_avail, "seconds": round(elapsed_s, 1), "hz": round(hz, 1),
+            "target_hz": CONTROL_FPS, "refill_ms": round(statistics.median(refill_lat) * 1000, 1) if refill_lat else None}
+
+
+def demo_text(demo: dict | None) -> tuple[str, str]:
+    """(zh, en) clause about the simulated task, from measured numbers only; ("", "") when it did not run."""
+    if not demo or not demo.get("status"):
+        return "", ""
+    st, hz = demo["status"], demo.get("hz") or 0
+    s, steps, tgt = demo.get("seconds") or 0, demo.get("steps") or 0, demo.get("target_hz") or CONTROL_FPS
+    stall = demo.get("refill_ms")
+    stall_zh = f"，每块等 {stall:.0f} ms" if stall else ""
+    stall_en = f", {stall:.0f} ms wait per chunk" if stall else ""
+    if st == "PASS":
+        return (f"；模拟执行 {s:.1f} s 通过，控制 {hz:.0f} Hz", f"; simulated task {s:.1f} s OK at {hz:.0f} Hz")
+    if st == "SLOW":
+        return (f"；模拟执行跑完但只有 {hz:.0f} Hz（目标 {tgt}），用了 {s:.1f} s{stall_zh}",
+                f"; simulated task finished but only {hz:.0f} Hz (target {tgt}), took {s:.1f} s{stall_en}")
+    if st == "SKIPPED":
+        return "", ""
+    return (f"；模拟执行 {s:.0f} s 内只走了 {steps} 步（{hz:.0f} Hz）{stall_zh}",
+            f"; simulated task: only {steps} steps in {s:.0f} s ({hz:.0f} Hz){stall_en}")
+
+
+def partial_train_numbers(r: dict) -> dict | None:
+    """Pure. A training probe that hit its budget still reported every timed step through @@progress:
+    {update_s, batch, hours, n} from those, or None when no step beyond the warm-up finished."""
+    p = r.get("partial") or {}
+    times, b = p.get("step_times") or [], p.get("batch")
+    if not times or not b:
+        return None
+    s = statistics.median(times)
+    return {"update_s": round(s, 3), "batch": b, "hours": round(projected_hours(s, b), 1), "n": len(times)}
+
+
 # ----------------------------------------------------------------------------------------------
 # Verdicts (pure; unit-tested).
 # ----------------------------------------------------------------------------------------------
 
+def _small_sample(r: dict) -> tuple[str, str]:
+    n = r.get("timed_calls")
+    return (f"（n={n}）", f" (n={n})") if n and n < TIMED_CPU else ("", "")
+
+
+def _budget_text(seconds) -> tuple[str, str]:
+    """'15 分钟' / '15 min' for a probe budget; seconds below a minute stay seconds."""
+    s = seconds or 0
+    if s >= 60:
+        return f"{s / 60:.0f} 分钟", f"{s / 60:.0f} min"
+    return f"{s:.0f} 秒", f"{s:.0f} s"
+
+
 def infer_verdict(level: Level, r: dict) -> dict:
     st = r.get("status", "NOT_RUN")
-    ms = r.get("latency_ms")
-    bud = r.get("budget_ms")
-    demo = r.get("demo") or {}
-    demo_txt = ""
-    if demo.get("status") == "PASS":
-        demo_txt = (f"；模拟执行 {DEMO_SECONDS} s 通过，控制 {demo.get('hz', 0):.0f} Hz",
-                    f"; simulated task {DEMO_SECONDS} s OK at {demo.get('hz', 0):.0f} Hz")
+    ms = r.get("latency_ms") or 0
+    bud = r.get("budget_ms") or 0
+    p95 = r.get("p95_ms")
+    lat_zh = f"每块 {ms:.0f} ms" + (f"，p95 {p95:.0f}" if p95 and round(p95) != round(ms) else "") + f"，预算 {bud:.0f} ms"
+    lat_en = f"{ms:.0f} ms per chunk" + (f", p95 {p95:.0f}" if p95 and round(p95) != round(ms) else "") + f", budget {bud:.0f} ms"
+    n_zh, n_en = _small_sample(r)
+    d_zh, d_en = demo_text(r.get("demo"))
     if st == "PASS":
         return {"mark": "ok", "evidence": "measured",
-                "zh": f"本地实时推理（每块 {ms:.0f} ms，预算 {bud:.0f} ms）" + (demo_txt[0] if demo_txt else ""),
-                "en": f"real-time local inference ({ms:.0f} ms per chunk, budget {bud:.0f} ms)" + (demo_txt[1] if demo_txt else "")}
+                "zh": f"本地实时推理（{lat_zh}）{n_zh}{d_zh}", "en": f"real-time local inference ({lat_en}){n_en}{d_en}"}
     if st == "MARGINAL":
         return {"mark": "warn", "evidence": "measured",
-                "zh": f"本地可推理但接近上限（每块 {ms:.0f} ms，预算 {bud:.0f} ms）；建议相机降到 320×240 或加长 chunk" + (demo_txt[0] if demo_txt else ""),
-                "en": f"local inference works but near the limit ({ms:.0f} ms per chunk, budget {bud:.0f} ms); lower cameras to 320x240 or lengthen the chunk" + (demo_txt[1] if demo_txt else "")}
+                "zh": f"本地可推理但接近上限（{lat_zh}）{n_zh}；建议相机降到 320×240 或加长 chunk{d_zh}",
+                "en": f"local inference works but near the limit ({lat_en}){n_en}; lower cameras to 320x240 or lengthen the chunk{d_en}"}
     if st == "TOO_SLOW":
         return {"mark": "bad", "evidence": "measured",
-                "zh": f"本地推理达不到实时（每块 {ms:.0f} ms，预算 {bud:.0f} ms）",
-                "en": f"local inference is not real-time ({ms:.0f} ms per chunk, budget {bud:.0f} ms)"}
+                "zh": f"本地推理达不到实时（{lat_zh}）{n_zh}", "en": f"local inference is not real-time ({lat_en}){n_en}"}
     if st in ("FAIL_OOM", "FAIL_RAM"):
         what = "显存" if r.get("device") == "cuda" else "内存"
         return {"mark": "bad", "evidence": "measured",
@@ -931,11 +1177,15 @@ def infer_verdict(level: Level, r: dict) -> dict:
     err, log = (r.get("error") or "")[:200], r.get("log") or ""
     seen_zh = (f"（{err}）" if err else "") + (f"，日志 {log}" if log else "")
     seen_en = (f" ({err})" if err else "") + (f", log {log}" if log else "")
+    phase_zh, phase_en = split_bi((r.get("partial") or {}).get("phase") or "")
+    b_zh, b_en = _budget_text(r.get("seconds"))
+    within_zh = f"{b_zh}内" if r.get("seconds") else "预算时间内"
+    within_en = f"in {b_en}" if r.get("seconds") else "within its budget"
     reasons = {
         "BLOCKED_GATED": ("未测：这个模型的仓库要先在 Hugging Face 上同意许可并登录", "not tested: this model's repo needs a Hugging Face login and license acceptance"),
         "FAIL_DEP": (f"未测：依赖没装上{seen_zh}", f"not tested: a dependency is missing{seen_en}"),
-        "FAIL_DOWNLOAD": ("未测：下载失败（网络）", "not tested: download failed (network)"),
-        "TIMEOUT": (f"未测：预算时间内没跑完（磁盘或网络极慢）{seen_zh}", f"not tested: did not finish within budget (very slow disk or network){seen_en}"),
+        "FAIL_DOWNLOAD": (f"未测：下载失败（网络）{seen_zh}", f"not tested: download failed (network){seen_en}"),
+        "TIMEOUT": (f"未测：{within_zh}没跑完；最后在做：{phase_zh or '—'}{seen_zh}", f"not tested: did not finish {within_en}; last seen: {phase_en or '-'}{seen_en}"),
         "FAIL_CRASH": (f"未测：程序异常{seen_zh}。这是工具或环境的问题，不是你电脑的结论", f"not tested: the probe crashed{seen_en}. That is a tool/environment problem, not a verdict about your machine"),
         "NOT_RUN": (r.get("zh", "未测"), r.get("en", "not tested")),
     }
@@ -943,32 +1193,58 @@ def infer_verdict(level: Level, r: dict) -> dict:
     return {"mark": "skip", "evidence": "not_run", "zh": zh, "en": en}
 
 
+def _train_bands(b: int, s: float, h: float) -> dict:
+    """The local / overnight / cloud sentence for one measured (or projected) step time."""
+    base_zh = f"batch {b}，每步 {s:.2f} s，参考任务约 {h:.1f} 小时"
+    base_en = f"batch {b}, {s:.2f} s per step, ~{h:.1f} h for the reference task"
+    if h <= LOCAL_OK_H:
+        v = {"mark": "ok", "zh": f"本地训练（{base_zh}）", "en": f"train locally ({base_en})", "cloud": False}
+    elif h <= OVERNIGHT_H:
+        v = {"mark": "warn", "zh": f"本地可训练，过一夜（{base_zh}）", "en": f"trainable locally overnight ({base_en})", "cloud": False}
+    else:
+        v = {"mark": "warn", "zh": f"本地能训但太慢（{base_zh}）→ 建议上云", "en": f"trainable locally but too slow ({base_en}) -> cloud recommended", "cloud": True}
+    if b == 1:
+        v["zh"] += "；batch 只能 1，效果打折 → 建议上云"
+        v["en"] += "; batch 1 only, quality suffers -> cloud recommended"
+        v["cloud"] = True
+        v["mark"] = "warn"
+    return v
+
+
 def train_verdict(level: Level, r: dict) -> dict:
     st = r.get("status", "NOT_RUN")
     if st == "PASS":
-        h = r["hours"]
-        b = r["batch"]
-        s = r["update_s"]
-        base_zh = f"batch {b}，每步 {s:.2f} s，参考任务约 {h:.1f} 小时"
-        base_en = f"batch {b}, {s:.2f} s per step, ~{h:.1f} h for the reference task"
-        if h <= LOCAL_OK_H:
-            v = {"mark": "ok", "zh": f"本地训练（{base_zh}）", "en": f"train locally ({base_en})", "cloud": False}
-        elif h <= OVERNIGHT_H:
-            v = {"mark": "warn", "zh": f"本地可训练，过一夜（{base_zh}）", "en": f"trainable locally overnight ({base_en})", "cloud": False}
-        else:
-            v = {"mark": "warn", "zh": f"本地能训但太慢（{base_zh}）→ 建议上云", "en": f"trainable locally but too slow ({base_en}) -> cloud recommended", "cloud": True}
-        if b == 1:
-            v["zh"] += "；batch 只能 1，效果打折 → 建议上云"
-            v["en"] += "; batch 1 only, quality suffers -> cloud recommended"
-            v["cloud"] = True
+        if any(r.get(k) is None for k in ("batch", "update_s", "hours")):   # a PASS with no numbers is a broken record, not a verdict
+            return {"mark": "skip", "evidence": "not_run", "cloud": None,
+                    "zh": "未测：训练结果缺少实测数字（记录不完整）", "en": "not tested: the training record has no measured numbers (incomplete record)"}
+        v = _train_bands(r["batch"], r["update_s"], r["hours"])
         v["evidence"] = "measured"
         return v
+    if st == "TIMEOUT":
+        b_zh, b_en = _budget_text(r.get("seconds"))
+        pn = partial_train_numbers(r)
+        if pn:
+            v = _train_bands(pn["batch"], pn["update_s"], pn["hours"])
+            v["zh"] += f"（据 {pn['n']} 步推算，{b_zh}预算用完即停）"
+            v["en"] += f" (projected from {pn['n']} steps; the run stopped at its {b_en} budget)"
+            v["evidence"] = "partial"
+            return v
+        phase_zh, phase_en = split_bi((r.get("partial") or {}).get("phase") or "")
+        n_steps = TRAIN_WARMUP + TRAIN_TIMED
+        within_zh = f"{b_zh}内" if r.get("seconds") else "预算时间内"
+        within_en = f"in {b_en}" if r.get("seconds") else "within its budget"
+        return {"mark": "skip", "evidence": "not_run", "cloud": None,
+                "zh": f"未测：{within_zh}没跑完 {n_steps} 步；最后在做：{phase_zh or '—'}",
+                "en": f"not tested: did not finish {n_steps} steps {within_en}; last seen: {phase_en or '-'}"}
     if st in ("FAIL_OOM", "FAIL_RAM"):
         return {"mark": "bad", "evidence": "measured", "cloud": True,
                 "zh": "本地训不了（batch 1 也装不下）→ 需要上云", "en": "cannot train locally (even batch 1 does not fit) -> needs cloud"}
     if st == "SKIPPED_FLOOR":
         return {"mark": "bad", "evidence": "floor", "cloud": True,
                 "zh": f"本地训不了：{r.get('zh', '')}", "en": f"cannot train locally: {r.get('en', '')}"}
+    if st == "SKIPPED_SLOWER":
+        return {"mark": "warn", "evidence": "floor", "cloud": True,
+                "zh": f"建议上云：{r.get('zh', '')}", "en": f"cloud recommended: {r.get('en', '')}"}
     v = infer_verdict(level, r)
     v["cloud"] = None
     return v
@@ -992,13 +1268,16 @@ def route_verdict(levels_v: dict) -> dict:
         return {"rule": "R1", "level": k.id,
                 "zh": f"全流程本地：录数据 → 本地训练 {k.label} → 本地运行。",
                 "en": f"Everything local: record data -> train {k.label} locally -> run locally."}
+    any_infer_ok = [lv for lv in ordered if infer_ok(levels_v[lv.id])]
     r2 = [lv for lv in ordered if infer_ok(levels_v[lv.id]) and train_cloud(levels_v[lv.id])]
     if r2:
         k = r2[-1]
+        top = any_infer_ok[-1]   # a higher level may run locally too, with its training verdict still open
+        more_zh = f" 推理最高可到 {top.label}（它的训练结论未定）。" if top is not k else ""
+        more_en = f" Inference runs locally up to {top.label} (its training verdict is open)." if top is not k else ""
         return {"rule": "R2", "level": k.id,
-                "zh": f"录数据在本地 → 上云训练 {k.label} → 权重拿回本地推理。",
-                "en": f"Record locally -> train {k.label} in the cloud -> bring the weights back and run locally."}
-    any_infer_ok = [lv for lv in ordered if infer_ok(levels_v[lv.id])]
+                "zh": f"录数据在本地 → 上云训练 {k.label} → 权重拿回本地推理。{more_zh}",
+                "en": f"Record locally -> train {k.label} in the cloud -> bring the weights back and run locally.{more_en}"}
     if any_infer_ok:
         k = any_infer_ok[-1]
         return {"rule": "R3", "level": k.id,
@@ -1017,6 +1296,8 @@ def route_verdict(levels_v: dict) -> dict:
 
 def basics_notes(specs: dict, install: dict) -> list[tuple[str, str]]:
     notes = []
+    if specs.get("accelerator_note") in ACCELERATOR_NOTES:   # the box a user shares must say why the CPU did the work
+        notes.append(ACCELERATOR_NOTES[specs["accelerator_note"]])
     if specs["system"] == "Darwin":
         notes.append(("键盘遥操作要给终端「辅助功能」权限；课程的相机脚本是 Linux 专用，mac 上用 lerobot-find-cameras。",
                       "Keyboard teleop needs Accessibility permission for the terminal; the course camera script is Linux-only, use lerobot-find-cameras on mac."))
@@ -1025,8 +1306,23 @@ def basics_notes(specs: dict, install: dict) -> list[tuple[str, str]]:
     if specs.get("wsl"):
         notes.append(("USB 串口要用 usbipd 转发进 WSL。", "USB serial must be forwarded into WSL with usbipd."))
     if install.get("torchcodec") is None and install.get("status") == "PASS":
-        notes.append(("torchcodec 不可用，视频解码走 pyav：正常，只是慢一点。", "torchcodec unavailable, video decoding uses pyav: fine, just slower."))
+        notes.append(("torchcodec 不可用，视频解码走 pyav：不影响任何结论，只让下载后的准备阶段慢一些。",
+                      "torchcodec unavailable, video decoding uses pyav: no verdict depends on it; only the preparation after downloads is slower."))
+    if install.get("version_mismatch"):
+        notes.append((f"注意：这次跑的是已有环境里的 lerobot {install['version_mismatch']}，不是 {LEROBOT_VERSION}（--skip-install）。",
+                      f"Note: this run used lerobot {install['version_mismatch']} from the existing env, not {LEROBOT_VERSION} (--skip-install)."))
     return notes
+
+
+def install_failure_text(install: dict) -> tuple[str, str]:
+    """What to call a failed stage 2. uv failing to build the environment is not 'LeRobot did not install'."""
+    reason, log = install.get("reason", ""), install.get("log", "")
+    if install.get("status") == "FAIL_CRASH":
+        hint_zh = "；防火墙后先设 UV_PYTHON_INSTALL_MIRROR 再重跑" if install.get("hint") == "UV_PYTHON_INSTALL_MIRROR" else ""
+        hint_en = "; behind a firewall set UV_PYTHON_INSTALL_MIRROR and rerun" if install.get("hint") == "UV_PYTHON_INSTALL_MIRROR" else ""
+        return (f"uv 没能建起环境（{reason}）：这是工具或网络的问题，不是 LeRobot 装不上，也不是你电脑的结论{hint_zh}。日志 {log}",
+                f"uv could not build the environment ({reason}): a tool/network problem, not LeRobot failing and not a verdict about your machine{hint_en}. Log {log}")
+    return (f"LeRobot {LEROBOT_VERSION} 装不上：{reason}。日志 {log}", f"LeRobot {LEROBOT_VERSION} did not install: {reason}. Log {log}")
 
 
 def evaluate(report: dict) -> dict:
@@ -1034,14 +1330,25 @@ def evaluate(report: dict) -> dict:
     install = report.get("install", {})
     out = {"install": install.get("status"), "levels": {}, "basics": None, "route": None, "notes": []}
     if install.get("status") != "PASS":
-        out["route"] = {"rule": "R0", "zh": "lerobot 0.6.1 装不上，见 install.log。", "en": "lerobot 0.6.1 did not install, see install.log."}
+        zh, en = install_failure_text(install)
+        out["route"] = {"rule": "R0", "zh": zh, "en": en}
         return out
     ds = report.get("dataset", {})
     if ds.get("status") != "PASS":
-        out["route"] = {"rule": "R0", "zh": "样例数据下载失败（网络问题），硬件没有得出任何结论。", "en": "Sample dataset download failed (network); no hardware verdict."}
-        out["basics"] = {"mark": "ok"}
+        # worker_dataset downloads AND decodes frame 0: a network failure, a broken video path, a full
+        # disk and a timeout all land here, and only the status tells them apart.
+        err = ds.get("error") or ""
+        st = ds.get("status", "NOT_RUN")
+        if st == "FAIL_DOWNLOAD":
+            zh, en = "样例数据下载失败（网络）", "Sample dataset download failed (network)"
+        elif st == "TIMEOUT":
+            zh, en = "样例数据在预算时间内没准备好（网络或磁盘很慢）", "Sample dataset was not ready within its budget (slow network or disk)"
+        else:
+            zh, en = f"样例数据准备失败（{st}{'：' + err if err else ''}）", f"Sample dataset preparation failed ({st}{': ' + err if err else ''})"
+        out["route"] = {"rule": "R0", "zh": f"{zh}，硬件没有得出任何结论。", "en": f"{en}; no hardware verdict."}
+        out["basics"] = {"mark": "skip"}
         return out
-    out["basics"] = {"mark": "ok"}
+    out["basics"] = {"mark": "skip"}   # assemble / calibrate / teleoperate / record: not measured by this tool
     out["notes"] = basics_notes(report["specs"], install)
     for lv in LEVELS:
         res = report.get("levels", {}).get(lv.id, {})
@@ -1178,29 +1485,38 @@ REPORT_TEXT = {
     "en": {
         "title": "Report", "machine": "Machine", "not_used": "not used this run", "video": "video decode",
         "not_installed": "did not install", "basics": "Basics",
-        "basics_line": "assemble / calibrate / teleoperate / record",
+        "basics_line": "assemble / calibrate / teleoperate / record: not tested here (they need only USB and a serial port)",
+        "gpu_unused": "not used by PyTorch",
         "levels": "Levels", "header": ["Lv", "Model", "Inference", "Training"],
         "legend": "{ok} ok   {warn} conditional   {bad} failed / floor   {skip} not tested",
         "details": "Details and evidence", "infer": "inference", "train": "training", "estimate": "estimate",
         "sep": ": ", "lp": " (", "rp": ")",
         "est_words": {"local": "train locally", "tight": "tight", "cloud": "cloud"},
         "est_note": "the estimate said '{w}'; the measurement wins", "route": "SO-101 route",
-        "per_chunk": "ms/chunk", "budget": "budget", "too_slow": "too slow", "no_fit": "does not fit",
+        "per_chunk": "ms/chunk", "budget": "budget", "too_slow": "too slow", "slow": "slow", "no_fit": "does not fit",
         "not_tested": "not tested", "to_cloud": " -> cloud", "overnight": " overnight",
         "no_fit_cloud": "does not fit -> cloud", "no_forward_cloud": "no forward pass -> cloud",
+        "slower_cloud": "only slower -> cloud", "partial": "~",
+        "after_training": "after {n} more training steps the simulated task's joint error went from {a}° to {b}°",
+        "ladder": "batch ladder {seq}", "peak": "peak {gb} GB",
     },
     "zh": {
         "title": "体检报告", "machine": "电脑", "not_used": "本次未用", "video": "视频解码",
-        "not_installed": "装不上", "basics": "基础", "basics_line": "组装 / 标定 / 遥操作 / 录数据",
+        "not_installed": "装不上", "basics": "基础",
+        "basics_line": "组装 / 标定 / 遥操作 / 录数据：本工具未测（只需 USB 和串口）",
+        "gpu_unused": "PyTorch 不用它",
         "levels": "各级实测", "header": ["级", "模型", "推理", "训练"],
         "legend": "{ok} 通过   {warn} 有条件   {bad} 失败 / 硬门槛   {skip} 未测",
         "details": "说明与依据", "infer": "推理", "train": "训练", "estimate": "预估",
         "sep": "：", "lp": "（", "rp": "）",
         "est_words": {"local": "本地可训", "tight": "勉强", "cloud": "需上云"},
         "est_note": "预估表曾说「{w}」，以实测为准", "route": "SO-101 路线",
-        "per_chunk": "ms/块", "budget": "预算", "too_slow": "太慢", "no_fit": "装不下",
+        "per_chunk": "ms/块", "budget": "预算", "too_slow": "太慢", "slow": "偏慢", "no_fit": "装不下",
         "not_tested": "未测", "to_cloud": " → 上云", "overnight": " 过夜",
         "no_fit_cloud": "装不下 → 上云", "no_forward_cloud": "前向都装不下 → 上云",
+        "slower_cloud": "只会更慢 → 上云", "partial": "约",
+        "after_training": "再训 {n} 步后，模拟任务的关节误差从 {a}° 降到 {b}°",
+        "ladder": "batch 阶梯 {seq}", "peak": "峰值 {gb} GB",
     },
 }
 
@@ -1208,14 +1524,19 @@ REPORT_TEXT = {
 def short_infer(v: dict, r: dict, t: dict) -> str:
     """One table cell for the inference verdict."""
     st = r.get("status", "NOT_RUN")
-    ms = r.get("latency_ms")
+    ms = r.get("latency_ms") or 0
     demo = r.get("demo") or {}
+    n = r.get("timed_calls")
+    small = f" n={n}" if n and n < TIMED_CPU else ""
+    hz = ""
+    if demo.get("hz") is not None and demo.get("status") != "SKIPPED":
+        hz = f" · {demo['hz']:.0f} Hz" + ("" if demo.get("status") == "PASS" else f" {t['slow']}")
     if st == "PASS":
-        return f"{ms:.0f} {t['per_chunk']}" + (f" · {demo.get('hz', 0):.0f} Hz" if demo else "")
+        return f"{ms:.0f} {t['per_chunk']}{small}{hz}"
     if st == "MARGINAL":
-        return f"{ms:.0f} {t['per_chunk']}{t['lp']}{t['budget']} {r.get('budget_ms', 0):.0f}{t['rp']}"
+        return f"{ms:.0f} {t['per_chunk']}{t['lp']}{t['budget']} {r.get('budget_ms') or 0:.0f}{t['rp']}{small}{hz}"
     if st == "TOO_SLOW":
-        return f"{ms:.0f} {t['per_chunk']}{t['lp']}{t['budget']} {r.get('budget_ms', 0):.0f}{t['rp']} {t['too_slow']}"
+        return f"{ms:.0f} {t['per_chunk']}{t['lp']}{t['budget']} {r.get('budget_ms') or 0:.0f}{t['rp']} {t['too_slow']}{small}"
     if st in ("FAIL_OOM", "FAIL_RAM", "SKIPPED_FLOOR"):
         return t["no_fit"]
     return t["not_tested"]
@@ -1223,8 +1544,8 @@ def short_infer(v: dict, r: dict, t: dict) -> str:
 
 def short_train(v: dict, r: dict, t: dict) -> str:
     st = r.get("status", "NOT_RUN")
-    if st == "PASS":
-        base = f"{r['hours']:.1f} h · batch {r['batch']}"
+    if st in ("PASS", "TIMEOUT") and r.get("hours") is not None and r.get("batch") is not None:
+        base = f"{t['partial'] if st == 'TIMEOUT' else ''}{r['hours']:.1f} h · batch {r['batch']}"
         if v.get("cloud"):
             return base + t["to_cloud"]
         if v.get("mark") == "warn":
@@ -1234,7 +1555,21 @@ def short_train(v: dict, r: dict, t: dict) -> str:
         return t["no_fit_cloud"]
     if st == "SKIPPED_FLOOR":
         return t["no_forward_cloud"]
+    if st == "SKIPPED_SLOWER":
+        return t["slower_cloud"]
     return t["not_tested"]
+
+
+def ladder_text(r: dict, t: dict) -> str:
+    """'batch ladder 8 OOM -> 4 OK · peak 9.8 GB' for a training result that stepped down, else ''."""
+    attempts = r.get("attempts") or []
+    if not any(a.get("status") == "FAIL_OOM" for a in attempts):
+        return ""
+    seq = " -> ".join(f"{a.get('batch')} {'OOM' if a.get('status') == 'FAIL_OOM' else 'OK'}" for a in attempts)
+    text = t["ladder"].format(seq=seq)
+    if r.get("peak_gb"):
+        text += " · " + t["peak"].format(gb=r["peak_gb"])
+    return text
 
 
 def render_one(con: Console, report: dict, verdicts: dict, lang: str, width: int):
@@ -1253,21 +1588,26 @@ def render_one(con: Console, report: dict, verdicts: dict, lang: str, width: int
     # ---- machine ---------------------------------------------------------------------------
     box.heading(t["machine"])
     dev = {"cuda": "CUDA", "mps": "Apple MPS", "cpu": "CPU only"}[specs["accelerator"]]
-    gpu = specs["nvidia"][0]["name"] if specs.get("nvidia") else ("Apple Silicon" if specs["accelerator"] == "mps" else "—")
+    if specs.get("nvidia"):
+        gpu = specs["nvidia"][0]["name"] + (f"{t['lp']}{t['not_used']}{t['rp']}" if specs["accelerator"] != "cuda" else "")
+    elif specs["accelerator"] == "mps":
+        gpu = "Apple Silicon"
+    elif specs.get("other_gpus"):   # an integrated or AMD GPU: the machine has one, PyTorch does not use it
+        gpu = ", ".join(specs["other_gpus"]) + f"{t['lp']}{t['gpu_unused']}{t['rp']}"
+    else:
+        gpu = "—"
     box.row(f"{specs['os']} · {specs['cpu']} · RAM {specs['ram_gb']} GB", indent=4)
-    unused = specs.get("nvidia") and specs["accelerator"] != "cuda"
-    box.row(f"GPU {gpu}" + (f"{t['lp']}{t['not_used']}{t['rp']}" if unused else "")
-            + f" · {dev} {specs.get('device_mem_gb')} GB" + (" · bf16" if specs.get("bf16") else ""), indent=4)
+    box.row(f"GPU {gpu} · {dev} {specs.get('device_mem_gb')} GB" + (" · bf16" if specs.get("bf16") else ""), indent=4)
     if inst.get("status") == "PASS":
         box.row(f"{box.mark('ok')} LeRobot {inst.get('lerobot', LEROBOT_VERSION)} · torch {inst.get('torch', '?')} · "
                 f"{t['video']} {'torchcodec' if inst.get('torchcodec') else 'pyav'}", indent=4)
     else:
-        box.row(f"{box.mark('bad')} LeRobot {LEROBOT_VERSION} {t['not_installed']} · {inst.get('reason', '')} · {inst.get('log', '')}", indent=4)
+        box.row(f"{box.mark('bad')} {install_failure_text(inst)[0 if lang == 'zh' else 1]}", indent=4)
     box.divider()
 
     if verdicts.get("basics"):
         box.heading(t["basics"])
-        box.row(f"{box.mark('ok')} {t['basics_line']}", indent=4)
+        box.row(f"{box.mark(verdicts['basics'].get('mark', 'skip'))} {t['basics_line']}", indent=4)
         for zh, en in verdicts.get("notes", []):
             box.row(f"· {zh if lang == 'zh' else en}", indent=6)
         box.divider()
@@ -1290,9 +1630,18 @@ def render_one(con: Console, report: dict, verdicts: dict, lang: str, width: int
         details = []
         for lv in LEVELS:
             v = verdicts["levels"][lv.id]
+            ri = levels.get(lv.id, {}).get("infer") or {}
+            rt = levels.get(lv.id, {}).get("train") or {}
             for stage, vv in ((t["infer"], v["infer"]), (t["train"], v["train"])):
-                if vv["mark"] != "ok":
+                if vv["mark"] != "ok" or vv.get("evidence") == "partial":
                     details.append((lv, stage, vv["mark"], vv[lang]))
+            ladder = ladder_text(rt, t)
+            if ladder:
+                details.append((lv, t["train"], "skip", ladder))
+            before, after = ri.get("demo") or {}, ri.get("demo_after_training") or {}
+            if before.get("mean_abs_err_deg") is not None and after.get("mean_abs_err_deg") is not None:
+                details.append((lv, t["train"], "ok", t["after_training"].format(
+                    n=after.get("extra_steps", "?"), a=f"{before['mean_abs_err_deg']:.0f}", b=f"{after['mean_abs_err_deg']:.0f}")))
             est = (report.get("estimate") or {}).get(lv.id, {}).get("train_estimate")
             measured = v["train"].get("cloud")
             if est and measured is not None and (est == "cloud") != measured:
@@ -1330,25 +1679,48 @@ class Report:
         self.save()
 
     def save(self):
+        """The dated file and a `report-latest.json` copy, each written atomically."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        text = json.dumps(self.data, ensure_ascii=False, indent=2, default=str)   # a stray Path or numpy scalar must not lose the report
+        write_atomic(self.path, text)
+        write_atomic(self.path.parent / LATEST_REPORT_NAME, text)
+
+
+def write_atomic(path: Path, text: str):
+    """Write next to the target and rename over it: a reader never sees a half-written file, and two
+    runs on the same day never interleave into one (the temp name is unique per call)."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def child_env() -> dict:
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONIOENCODING"] = "utf-8:replace"   # a character the pipe cannot encode must not end a probe
+    env.setdefault("PYTHONUTF8", "1")
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
     # Plain HTTP downloads. huggingface_hub's xet transfer depends on a separate CAS CDN that is slow
     # or broken on some networks (measured here: ~1 MB/s and repeated CAS errors vs. full speed
     # over HTTP). A diagnostic tool takes the path that works everywhere.
     env.setdefault("HF_HUB_DISABLE_XET", "1")
+    env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", str(HF_HUB_DOWNLOAD_TIMEOUT_S))
+    env.setdefault("HF_HUB_ETAG_TIMEOUT", str(HF_HUB_ETAG_TIMEOUT_S))
     return env
 
 
 _PROGRESS_RE = re.compile(r"\d+%\||\d+(\.\d+)?\s?[kMG]?B/s|it/s|Downloading|Fetching")
+_STEP_TIME_RE = re.compile(r"(\d+(?:\.\d+)?) s/step")   # the note worker_train puts on every @@progress line
 
 
 def is_download_progress(text: str) -> bool:
@@ -1356,71 +1728,106 @@ def is_download_progress(text: str) -> bool:
     return bool(_PROGRESS_RE.search(text))
 
 
-def run_worker(py: Path, con: Console, log_path: Path, worker_args: list[str], budget_s: int,
-               progress_label: str, on_joints=None, env_extra: dict | None = None) -> dict:
-    """Run `lerobot_doctor.py --worker ...` in the venv and collect its @@result."""
-    result_holder = {}
-    state = {"progress": ""}
+class WorkerOutput:
+    """Parses one worker's @@ lines. Keeps what a run that never sent its @@result still told us:
+    the last activity, the progress of every stage and the timed training steps."""
 
-    def on_line(text: str, is_cr: bool) -> bool:
+    def __init__(self, con: Console, progress_label: str, on_joints=None):
+        self.con, self.label, self.on_joints = con, progress_label, on_joints
+        self.result: dict = {}
+        self.last_activity = ""
+        self.progress: dict = {}
+        self.train_stage = None
+        self.step_times: list[float] = []
+        self.batch = None
+
+    def on_line(self, text: str, is_cr: bool) -> bool:
         if text.startswith("@@result "):
             try:
-                result_holder.update(json.loads(text[len("@@result "):]))
+                self.result.update(json.loads(text[len("@@result "):]))
             except json.JSONDecodeError:
                 pass
             return True
         if text.startswith("@@progress "):
-            _, stage, i, n, *extra = text.split(" ", 4)
-            note = extra[0] if extra else ""
             try:
-                con.bar(f"{progress_label} {stage}", int(i), int(n), note)
-            except ValueError:
-                con.transient(f"  {progress_label} {stage} {i}/{n} {note}")
+                _, stage, i, n, *extra = text.split(" ", 4)
+                i, n = int(i), int(n)
+            except ValueError:   # a line the pipe cut half-way: nothing to draw, nothing to keep
+                return True
+            note = extra[0] if extra else ""
+            self.progress[stage] = [i, n, note]
+            if stage.startswith("batch"):
+                if stage != self.train_stage:   # a smaller batch after an OOM: the earlier steps were another run's
+                    self.train_stage, self.step_times = stage, []
+                    self.batch = int(stage[5:]) if stage[5:].isdigit() else None
+                m = _STEP_TIME_RE.match(note)
+                if m and i > TRAIN_WARMUP:      # i is 1-based; the worker times its 0-based steps >= TRAIN_WARMUP
+                    self.step_times.append(float(m.group(1)))
+            self.con.bar(f"{self.label} {stage}", i, n, note)
             return True
         if text.startswith("@@activity "):
-            con.activity(text[len("@@activity "):])
+            self.last_activity = text[len("@@activity "):]
+            self.con.activity(self.last_activity)
+            return True
+        if text.startswith("@@note "):
+            self.con.line(f"  {self.con.mark('info')} {text[len('@@note '):]}")
             return True
         if text.startswith("@@event "):
             _, name, *payload = text.split(" ", 2)
             body = payload[0] if payload else ""
             if name == "oom":
-                con.line(f"  {con.mark('warn')} {body}")
+                self.con.line(f"  {self.con.mark('warn')} {body}")
             elif name == "note":
-                con.line(f"  {con.mark('info')} {body}")
+                self.con.line(f"  {self.con.mark('info')} {body}")
             return True
         if text.startswith("@@joints "):
-            if on_joints:
-                on_joints(text[len("@@joints "):])
+            if self.on_joints:
+                self.on_joints(text[len("@@joints "):])
             return True
         # Everything else from the child goes to the log only, except download progress bars:
         # a traceback or a library warning on a beginner's screen reads as "it broke".
         if is_download_progress(text):
-            con.transient(text[-200:]) if is_cr else con.raw(text + "\n")
+            self.con.transient(text[-200:]) if is_cr else self.con.raw(text + "\n")
         return True
 
+    def partial(self) -> dict:
+        return {"phase": self.last_activity, "progress": {k: list(v) for k, v in self.progress.items()},
+                "step_times": list(self.step_times), "batch": self.batch}
+
+
+def run_worker(py: Path, con: Console, log_path: Path, worker_args: list[str], budget_s: int,
+               progress_label: str, on_joints=None, env_extra: dict | None = None) -> dict:
+    """Run `lerobot_doctor.py --worker ...` in the venv and collect its @@result."""
+    out = WorkerOutput(con, progress_label, on_joints)
     cmd = [str(py), str(Path(__file__).resolve()), "--worker", *worker_args]
     t0 = time.monotonic()
     env = child_env()
     env.update(env_extra or {})
-    rc = stream_process(cmd, con, log_path, env=env, timeout=budget_s, on_line=on_line)
+    offset = log_path.stat().st_size if log_path.exists() else 0
+    rc = stream_process(cmd, con, log_path, env=env, timeout=budget_s, on_line=out.on_line)
     seconds = round(time.monotonic() - t0, 1)
+    worker_keys = {k: v for k, v in out.result.items() if k != "status"}
     if rc == -999:
-        return {"status": "TIMEOUT", "evidence": "not_run", "seconds": seconds, "log": str(log_path)}
-    if result_holder and rc == 0:
-        result_holder.setdefault("seconds", seconds)
-        result_holder["log"] = str(log_path)
-        return result_holder
-    tail = log_path.read_text(encoding="utf-8", errors="replace")[-20000:] if log_path.exists() else ""
+        if out.result.get("status") == "PASS":   # the probe finished and reported; only its bonus work overran
+            return {**out.result, "seconds": seconds, "log": str(log_path), "overran_after_result": True}
+        return {"status": "TIMEOUT", "evidence": "not_run", "seconds": seconds, "log": str(log_path),
+                "partial": out.partial(), **worker_keys}
+    if out.result and rc == 0:
+        out.result.setdefault("seconds", seconds)
+        out.result["log"] = str(log_path)
+        return out.result
+    tail = log_since(log_path, offset)[-20000:]   # this run's output only, never a previous attempt's
     status = classify_exit(rc, tail)
-    if result_holder.get("status"):   # the worker classified its own failure before exiting non-zero
-        status = result_holder["status"]
+    if out.result.get("status"):   # the worker classified its own failure before exiting non-zero
+        status = out.result["status"]
     err = ""
     for line in reversed(tail.splitlines()):
         if "Error" in line or "error" in line:
             err = line.strip()[:300]
             break
-    return {"status": status, "evidence": "measured" if status in STATUS_MEASURED_FAIL else "not_run",
-            "returncode": rc, "seconds": seconds, "log": str(log_path), "error": err, **{k: v for k, v in result_holder.items() if k != "status"}}
+    # The parent's bookkeeping wins over anything the worker wrote under the same key.
+    return {**worker_keys, "status": status, "evidence": "measured" if status in STATUS_MEASURED_FAIL else "not_run",
+            "returncode": rc, "seconds": seconds, "log": str(log_path), "error": err}
 
 
 def run_worker_with_download_retry(py, con, log_path, wargs, budget, label, on_joints=None) -> dict:
@@ -1434,7 +1841,8 @@ def run_worker_with_download_retry(py, con, log_path, wargs, budget, label, on_j
     return r
 
 
-def orchestrate(args, con: Console, py: Path, report: Report) -> None:
+def orchestrate(args, con: Console, py: Path, report: Report):
+    """Dataset, 3D page, the two ladders. Returns the SimPage (or None) so the caller can close it."""
     data = report.data
     specs = data["specs"]
     logs = WORK_DIR / "logs"
@@ -1452,22 +1860,43 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
     data["dataset"] = ds
     report.save()
     if ds.get("status") != "PASS":
-        con.item("bad", f"样例数据没下下来：{ds.get('error') or ds.get('status')}", f"sample dataset failed: {ds.get('error') or ds.get('status')}")
-        return
+        con.item("bad", f"样例数据没准备好：{ds.get('error') or ds.get('status')}", f"sample dataset not ready: {ds.get('error') or ds.get('status')}")
+        return None
     con.item("ok", f"{ds['frames']} 帧 · 指令「{ds['task']}」· 解码后端 {ds['video_backend']}",
              f"{ds['frames']} frames, task '{ds['task']}', decoder {ds['video_backend']}")
 
     # ---- sim page -----------------------------------------------------------------------------
-    sim = None
+    # The page is a bonus: it never blocks a probe, and any exception it raises later closes the
+    # page and lets the probes continue.
+    page = {"sim": None}
     if not args.no_sim:
         con.activity(bi("准备 3D 模拟页面", "preparing the 3D simulation page"))
         try:
-            sim = SimPage(port=args.port, urdf_dir=WORK_DIR / "models" / "so101", dataset_root=WORK_DIR / "dataset",
-                          con=con, open_browser=not args.no_browser)
-            con.item("ok", f"3D 模拟页面：http://127.0.0.1:{args.port}（浏览器应已自动打开）", f"3D simulation page: http://127.0.0.1:{args.port} (a browser tab should have opened)")
-        except Exception as e:  # noqa: BLE001 - the page is a bonus, never blocks the probes
-            con.item("warn", f"3D 页面没起来（{type(e).__name__}: {str(e)[:120]}），探针照跑", f"3D page failed ({type(e).__name__}); probes continue")
-            sim = None
+            page["sim"] = SimPage(port=args.port, urdf_dir=WORK_DIR / "models" / "so101", dataset_root=WORK_DIR / "dataset",
+                                  con=con, open_browser=not args.no_browser)
+            url = f"http://127.0.0.1:{page['sim'].port}"
+            con.item("ok", f"3D 模拟页面：{url}（浏览器应已自动打开）", f"3D simulation page: {url} (a browser tab should have opened)")
+        except Exception as e:  # noqa: BLE001
+            busy = "address already in use" in str(e).lower() or "errno 98" in str(e).lower() or "10048" in str(e)
+            hint_zh = f"；端口 {args.port} 被占，可加 --port 换一个" if busy else ""
+            hint_en = f"; port {args.port} is busy, pick another with --port" if busy else ""
+            con.item("warn", f"3D 页面没起来（{type(e).__name__}: {str(e)[:120]}）{hint_zh}，探针照跑",
+                     f"3D page failed ({type(e).__name__}: {str(e)[:120]}){hint_en}; probes continue")
+
+    def sim_call(method: str, *a):
+        s = page["sim"]
+        if not s:
+            return
+        try:
+            getattr(s, method)(*a)
+        except Exception as e:  # noqa: BLE001 - a NaN action, a dropped websocket, a renamed joint
+            page["sim"] = None
+            con.item("warn", f"3D 页面出错（{type(e).__name__}: {str(e)[:80]}），已关闭页面，探针照跑",
+                     f"3D page failed ({type(e).__name__}: {str(e)[:80]}); page closed, probes continue")
+            try:
+                s.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---- weights ------------------------------------------------------------------------------
     con.activity(bi("查询模型大小", "querying model sizes"))
@@ -1489,8 +1918,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
                 "zh": "未测：这次运行没有选它（--levels）", "en": "not tested: not selected for this run (--levels)"}
 
     def joints_cb(payload):
-        if sim:
-            sim.on_joints(payload)
+        sim_call("on_joints", payload)
 
     # ---- inference ladder -------------------------------------------------------------------
     for lv in LEVELS:
@@ -1503,8 +1931,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
             con.item("skip" if pre["evidence"] == "not_run" else "bad", pre["zh"], pre["en"])
             report.save()
             continue
-        if sim:
-            sim.begin_level(lv.label)
+        sim_call("begin_level", lv.label)
         con.activity(f"{lv.label} · " + bi("下载/加载模型", "downloading/loading model"))
         wargs = ["infer", "--level", lv.id, "--device", device, "--dtype", dtype]
         if args.vram_cap:
@@ -1516,8 +1943,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
         results[lv.id]["infer"] = r
         v = infer_verdict(lv, r)
         con.item(v["mark"], v["zh"], v["en"])
-        if sim:
-            sim.end_level(lv.label, r)
+        sim_call("end_level", lv.label, r)
         report.save()
 
     # ---- training ladder --------------------------------------------------------------------
@@ -1527,7 +1953,7 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
         pre = pre or train_precheck(lv, results)
         if pre:
             results[lv.id]["train"] = pre
-            con.item("skip" if pre["evidence"] == "not_run" else "bad", pre["zh"], pre["en"])
+            con.item(train_verdict(lv, pre)["mark"], pre["zh"], pre["en"])
             report.save()
             continue
         con.activity(f"{lv.label} · " + bi("加载模型准备训练", "loading model for training"))
@@ -1535,21 +1961,25 @@ def orchestrate(args, con: Console, py: Path, report: Report) -> None:
         if args.vram_cap:
             wargs += ["--vram-cap", str(args.vram_cap)]
         budget = TRAIN_L1_BUDGET_S if lv.id == "L1" else TRAIN_BUDGET_S
-        if lv.id == "L1" and sim:
-            sim.begin_level(lv.label + " " + bi("（训练后）", "(after training)"))
+        if lv.id == "L1":
+            sim_call("begin_level", lv.label + " " + bi("（训练后）", "(after training)"))
         r = run_worker_with_download_retry(py, con, logs / f"{lv.id}-train.log", wargs, budget, lv.label, on_joints=joints_cb)
+        r["device"] = device   # train_precheck's speed rule reads it off the smaller level's result
         r["params"] = (weights.get(lv.id) or {}).get("params") or r.get("params")
         results[lv.id]["train"] = r
         if r.get("status") == "PASS":
             r["hours"] = round(projected_hours(r["update_s"], r["batch"]), 1)
+        elif r.get("status") == "TIMEOUT" and (pn := partial_train_numbers(r)):
+            # the probe hit its budget, but every timed step it finished is a measurement
+            r.update(update_s=pn["update_s"], batch=pn["batch"], hours=pn["hours"], timed_steps=pn["n"])
         v = train_verdict(lv, r)
         con.item(v["mark"], v["zh"], v["en"])
         if lv.id == "L1" and r.get("demo"):
             results[lv.id]["infer"]["demo_after_training"] = r["demo"]
         report.save()
 
-    if sim:
-        sim.finish()
+    sim_call("finish")
+    return page["sim"]
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1568,8 +1998,12 @@ def ensure_urdf(urdf_dir: Path, con: Console | None = None) -> Path:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if con:
             con.activity(bi(f"下载 3D 模型 {local}", f"downloading 3D model {local}"))
+        # .part then rename: a Ctrl-C or a dropped connection must not leave a truncated mesh that
+        # the `dst.exists()` check above would then keep forever.
+        part = dst.with_name(dst.name + ".part")
         with urllib.request.urlopen(base + remote, timeout=60) as resp:
-            dst.write_bytes(resp.read())
+            part.write_bytes(resp.read())
+        os.replace(part, dst)
     return urdf_dir / "so101_new_calib.urdf"
 
 
@@ -1585,6 +2019,8 @@ class SimPage:
         self.con = con
         urdf_path = ensure_urdf(urdf_dir, con)
         self.server = viser.ViserServer(host="127.0.0.1", port=port, label="LeRobot Doctor · SO-101", verbose=False)
+        get_port = getattr(self.server, "get_port", None)   # viser may have moved to a free port; print the real one
+        self.port = int(get_port()) if callable(get_port) else port
         scene = self.server.scene
         scene.set_up_direction("+z")
         scene.add_grid("/ground", width=0.8, height=0.8, plane="xy", cell_size=0.05)
@@ -1620,7 +2056,8 @@ class SimPage:
         self.home()
         if open_browser:
             import webbrowser
-            threading.Thread(target=lambda: webbrowser.open(f"http://127.0.0.1:{port}"), daemon=True).start()
+            url = f"http://127.0.0.1:{self.port}"
+            threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
 
     def home(self):
         self.arm.update_cfg(self.np.zeros(len(self.joint_names)))
@@ -1700,6 +2137,12 @@ class SimPage:
     def finish(self):
         self.status_md.content = bi("体检完成，报告在终端。", "Check finished; the report is in the terminal.")
 
+    def close(self):
+        """Stop the server: the process must not depend on viser's threads happening to be daemonic."""
+        stop = getattr(self.server, "stop", None)
+        if callable(stop):
+            stop()
+
 
 # ----------------------------------------------------------------------------------------------
 # Worker (child process inside the venv): dataset / infer / train.
@@ -1748,7 +2191,7 @@ def _apply_vram_cap(device, cap_gb: float | None):
         total = torch.cuda.get_device_properties(0).total_memory
         frac = min(1.0, cap_gb * 1e9 / total)
         torch.cuda.set_per_process_memory_fraction(frac, 0)
-        emit("note", f"simulating a {cap_gb} GB GPU (memory fraction {frac:.2f})")
+        emit("event", "note", f"simulating a {cap_gb} GB GPU (memory fraction {frac:.2f})")
 
 
 def _peak_mem_gb(device) -> float | None:
@@ -1805,7 +2248,7 @@ def build_level_config(level: Level, device, dtype: str, meta, for_training: boo
         if ckpt_cams and set(ckpt_cams) != set(ds_cams) and not checkpoint:
             # The checkpoint was trained with other camera names; lerobot's own answer is --rename_map.
             rename_map = dict(zip(ds_cams, ckpt_cams))
-            emit("note", f"camera rename for {level.label}: {rename_map}")
+            emit("event", "note", f"camera rename for {level.label}: {rename_map}")
     else:
         cfg = make_policy_config(level.policy, device=str(device))
         if hasattr(cfg, "dtype") and level.large:
@@ -1856,24 +2299,31 @@ def training_dataset(cfg, meta):
     return LeRobotDataset(DATASET_REPO, root=WORK_DIR / "dataset", episodes=DATASET_EPISODES, delta_timestamps=delta)
 
 
-def _observation(ds, idx: int, state, device, task: str, robot_type: str):
-    """One inference observation: recorded camera frames + the simulated arm's joint state."""
+def _frame(item, camera_keys) -> dict:
+    """The camera tensors of one dataset item as uint8: a decoded frame kept in memory then costs
+    0.9 MB instead of 3.7 MB, so a whole demo episode (300 frames x 2 cameras) fits in ~0.6 GB.
+    lerobot decodes video to uint8 and divides by 255; going back is exact."""
     import torch
-    item = ds[idx]
-    obs = {}
-    for key in ds.meta.camera_keys:
+    out = {}
+    for key in camera_keys:
         img = item[key]
-        if img.dtype == torch.uint8:
-            img = img.to(torch.float32) / 255.0
-        obs[key] = img.unsqueeze(0).to(device)
+        if img.dtype != torch.uint8:
+            img = (img * 255).round().clamp(0, 255).to(torch.uint8)
+        out[key] = img
+    return out
+
+
+def _observation(frame: dict, state, device, task: str, robot_type: str):
+    """One inference observation: an already decoded frame + the simulated arm's joint state."""
+    import torch
+    obs = {key: (img.to(torch.float32) / 255.0).unsqueeze(0).to(device) for key, img in frame.items()}
     obs["observation.state"] = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
     obs["task"] = task
     obs["robot_type"] = robot_type
     return obs
 
 
-def worker_infer(level: Level, device_name: str, dtype: str, vram_cap: float | None,
-                 checkpoint: Path | None = None, demo_only: bool = False) -> dict:
+def worker_infer(level: Level, device_name: str, dtype: str, vram_cap: float | None) -> dict:
     import torch
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -1881,13 +2331,17 @@ def worker_infer(level: Level, device_name: str, dtype: str, vram_cap: float | N
     _apply_vram_cap(device, vram_cap)
     root = WORK_DIR / "dataset"
     ds = LeRobotDataset(DATASET_REPO, root=root, episodes=[DEMO_EPISODE])
-    task = str(ds.meta.tasks.index[0])
+    cams = list(ds.meta.camera_keys)
+    try:
+        task = str(ds.meta.tasks.index[0])
+    except Exception:  # noqa: BLE001 - same guard as worker_dataset
+        task = str(ds[0].get("task", ""))
     robot_type = ds.meta.robot_type or "so101_follower"
 
     emit("activity", f"{level.label} · " + bi(f"下载/加载模型到 {device_name}", f"downloading/loading model to {device_name}"))
     t_load = time.monotonic()
     try:
-        policy, pre, post, _ = load_level_policy(level, device, dtype, ds.meta, for_training=False, checkpoint=checkpoint)
+        policy, pre, post, _ = load_level_policy(level, device, dtype, ds.meta, for_training=False)
     except BaseException as e:  # noqa: BLE001 - classified below
         if _is_oom(e):
             emit_result({"status": "FAIL_OOM", "evidence": "measured", "phase": "load", "peak_gb": _peak_mem_gb(device)})
@@ -1897,51 +2351,48 @@ def worker_infer(level: Level, device_name: str, dtype: str, vram_cap: float | N
     params = sum(p.numel() for p in policy.parameters())
     n_action_steps = int(getattr(policy.config, "n_action_steps", 1))
     result = {"status": "PASS", "evidence": "measured", "params": params, "load_s": load_s,
-              "n_action_steps": n_action_steps, "device": device_name, "dtype": dtype}
+              "n_action_steps": n_action_steps, "device": device_name, "dtype": dtype,
+              "timing_mode": "reset_per_chunk"}   # every timed call is one full chunk prediction, never an amortised pop
 
     state0 = ds[0]["observation.state"].numpy().tolist()
-    if not demo_only:
-        # ---- timing: predict_action_chunk is the real forward pass ----------------------
-        is_gpu = device.type == "cuda"
-        warm, timed = (WARMUP_GPU, TIMED_GPU) if is_gpu else (WARMUP_CPU, TIMED_CPU)
-        budget = n_action_steps / CONTROL_FPS
-        lat = []
-        emit("activity", f"{level.label} · " + bi("预热", "warm-up"))
-        try:
-            with torch.inference_mode():
-                # select_action on an empty queue = exactly one forward pass (predict_action_chunk)
-                # plus a queue pop. reset() before each call keeps every call a real forward, and this
-                # is the same code path lerobot-record uses on the robot.
-                for i in range(warm):
-                    obs = _observation(ds, i, state0, device, task, robot_type)
-                    policy.reset()
-                    policy.select_action(pre(obs))
-                    _sync(device)
-                    emit("progress", "warmup", i + 1, warm)
-                for i in range(timed):
-                    obs = _observation(ds, i, state0, device, task, robot_type)
-                    policy.reset()
-                    t0 = time.perf_counter()
-                    policy.select_action(pre(obs))
-                    _sync(device)
-                    dt = time.perf_counter() - t0
-                    lat.append(dt)
-                    emit("progress", "timing", i + 1, timed, f"median {statistics.median(lat)*1000:.0f} ms")
-                    if i == 0 and not is_gpu and dt > HOPELESS_RATIO * budget:
-                        emit("note", f"one forward pass already {dt/budget:.0f}x over the {budget:.2f} s budget; stopping the timing here")
-                        break
-        except BaseException as e:  # noqa: BLE001
-            if _is_oom(e):
-                emit_result({**result, "status": "FAIL_OOM", "phase": "forward", "peak_gb": _peak_mem_gb(device)})
-                return {"status": "FAIL_OOM"}
-            raise
-        med = statistics.median(lat)
-        status, budget = realtime_status(med, n_action_steps)
-        result.update(status=status, latency_ms=round(med * 1000, 1), p95_ms=round(sorted(lat)[int(0.95 * (len(lat) - 1))] * 1000, 1),
-                      budget_ms=round(budget * 1000), timed_calls=len(lat), peak_gb=_peak_mem_gb(device))
+    # ---- timing: predict_action_chunk is the real forward pass --------------------------
+    is_gpu = device.type == "cuda"
+    warm, timed = (WARMUP_GPU, TIMED_GPU) if is_gpu else (WARMUP_CPU, TIMED_CPU)
+    budget = n_action_steps / CONTROL_FPS
+    lat = []
+    emit("activity", f"{level.label} · " + bi("预热", "warm-up"))
+    try:
+        with torch.inference_mode():
+            # select_action on an empty queue = exactly one forward pass (predict_action_chunk)
+            # plus a queue pop. reset() before each call keeps every call a real forward, and this
+            # is the same code path lerobot-record uses on the robot.
+            for i in range(warm):
+                obs = _observation(_frame(ds[i], cams), state0, device, task, robot_type)
+                policy.reset()
+                policy.select_action(pre(obs))
+                _sync(device)
+                emit("progress", "warmup", i + 1, warm)
+            for i in range(timed):
+                obs = _observation(_frame(ds[i], cams), state0, device, task, robot_type)   # decoded before the clock starts
+                policy.reset()
+                t0 = time.perf_counter()
+                policy.select_action(pre(obs))
+                _sync(device)
+                dt = time.perf_counter() - t0
+                lat.append(dt)
+                emit("progress", "timing", i + 1, timed, f"median {statistics.median(lat)*1000:.0f} ms")
+                if i == 0 and not is_gpu and dt > HOPELESS_RATIO * budget:
+                    emit("event", "note", f"one forward pass already {dt/budget:.0f}x over the {budget:.2f} s budget; stopping the timing here")
+                    break
+    except BaseException as e:  # noqa: BLE001
+        if _is_oom(e):
+            emit_result({**result, "status": "FAIL_OOM", "phase": "forward", "peak_gb": _peak_mem_gb(device)})
+            return {"status": "FAIL_OOM"}
+        raise
+    result.update(**infer_summary(lat, n_action_steps), peak_gb=_peak_mem_gb(device))
     # ---- simulated task ------------------------------------------------------------------
-    if result["status"] in ("PASS", "MARGINAL") or demo_only:
-        result["demo"] = run_demo(policy, pre, post, ds, device, task, robot_type, state0)
+    if result["status"] in STATUS_MEASURED_OK:
+        result["demo"] = run_demo(policy, pre, post, ds, device, task, robot_type, state0, n_action_steps)
     emit_result(result)
     return result
 
@@ -1954,49 +2405,59 @@ def _sync(device):
         torch.mps.synchronize()
 
 
-def run_demo(policy, pre, post, ds, device, task, robot_type, state0) -> dict:
+def run_demo(policy, pre, post, ds, device, task, robot_type, state0, n_action_steps: int) -> dict:
     """Half-closed loop: recorded frames in, model actions drive a kinematic arm whose joint
-    state is fed back as observation.state. Joint targets stream to the parent as @@joints."""
+    state is fed back as observation.state. Joint targets stream to the parent as @@joints.
+
+    Every frame is decoded before the clock starts: a real robot's cameras hand over frames for
+    free, so the decoder's time (seconds per frame with pyav on a slow CPU) is not the policy's.
+    time.perf_counter throughout: time.monotonic ticks every 15.6 ms on Windows, half a 30 Hz period."""
     import torch
-    n_steps = DEMO_SECONDS * CONTROL_FPS
-    n_avail = min(len(ds), n_steps)
+    n_avail = min(len(ds), DEMO_SECONDS * CONTROL_FPS)
+    cams = list(ds.meta.camera_keys)
+    emit("activity", bi(f"解码 {n_avail} 帧样例画面", f"decoding {n_avail} sample frames"))
+    t_dec = time.perf_counter()
+    frames, human = [], []
+    for t in range(n_avail):
+        item = ds[t]
+        frames.append(_frame(item, cams))
+        human.append(item["action"].numpy().tolist()[:6])
+        if t % 50 == 0:
+            emit("progress", "decode", t + 1, n_avail)
+    decode_s = time.perf_counter() - t_dec
     sim = list(state0)
     policy.reset()
-    errs = []
-    t_start = time.monotonic()
-    last_lat = 0.0
+    errs, refill = [], []
     done = 0
     emit("activity", bi("模拟执行样例任务", "running the simulated task"))
+    t_start = time.perf_counter()
     with torch.inference_mode():
         for t in range(n_avail):
-            tick = time.monotonic()
-            obs = _observation(ds, t, sim, device, task, robot_type)
+            tick = time.perf_counter()
+            obs = _observation(frames[t], sim, device, task, robot_type)
             t0 = time.perf_counter()
-            action = policy.select_action(pre(obs))
-            action = post(action)
+            action = post(policy.select_action(pre(obs)))
             _sync(device)
             dt = time.perf_counter() - t0
-            if dt > 0.005:
-                last_lat = dt   # a real forward happened (queue refill); pop-from-queue is ~0
+            if t % n_action_steps == 0:   # the queue is empty here: a real forward pass, not a pop
+                refill.append(dt)
             target = action[0].detach().to("cpu").float().numpy().tolist()[:6]
             sim = [s + DEMO_FOLLOW_ALPHA * (tg - s) for s, tg in zip(sim, target)]
-            human = ds[t]["action"].numpy().tolist()[:6]
-            errs.append(sum(abs(a - b) for a, b in zip(target[:5], human[:5])) / 5)
+            errs.append(sum(abs(a - b) for a, b in zip(target[:5], human[t][:5])) / 5)
             done = t + 1
-            elapsed = time.monotonic() - t_start
+            elapsed = time.perf_counter() - t_start
             hz = done / elapsed if elapsed > 0 else 0.0
-            emit("joints", t, *[f"{x:.3f}" for x in sim], f"{hz:.1f}", f"{last_lat*1000:.1f}")
+            emit("joints", t, *[f"{x:.3f}" for x in sim], f"{hz:.1f}", f"{(refill[-1] if refill else 0.0) * 1000:.1f}")
             if t % 15 == 0:
                 emit("progress", "demo", done, n_avail, f"{hz:.0f} Hz")
             if elapsed > DEMO_WALL_CAP_S:
                 break
-            sleep_for = 1.0 / CONTROL_FPS - (time.monotonic() - tick)
+            sleep_for = 1.0 / CONTROL_FPS - (time.perf_counter() - tick)
             if sleep_for > 0:
                 time.sleep(sleep_for)
-    elapsed = time.monotonic() - t_start
-    hz = done / elapsed if elapsed else 0.0
-    return {"status": "PASS" if done >= n_avail else "TOO_SLOW", "steps": done, "seconds": round(elapsed, 1),
-            "hz": round(hz, 1), "mean_abs_err_deg": round(statistics.mean(errs), 2) if errs else None}
+    out = demo_summary(done, n_avail, time.perf_counter() - t_start, refill)
+    out.update(decode_s=round(decode_s, 1), mean_abs_err_deg=round(statistics.mean(errs), 2) if errs else None)
+    return out
 
 
 def worker_train(level: Level, device_name: str, dtype: str, vram_cap: float | None) -> dict:
@@ -2070,7 +2531,9 @@ def worker_train(level: Level, device_name: str, dtype: str, vram_cap: float | N
             if _is_oom(e):
                 emit("event", "oom", f"{level.label} batch {batch_size}: out of memory, trying a smaller batch")
                 result["attempts"].append({"batch": batch_size, "status": "FAIL_OOM"})
-                policy = None
+                # Drop every reference of the failed attempt (the optimizer alone holds 2x the weights)
+                # before asking the allocator for room, or the smaller batch OOMs on the leftovers.
+                policy = optimizer = lr_scheduler = loader = it = batch = tracker = None
                 _free_cache(device)
                 cfg_policy, rename_map = build_level_config(level, device, dtype, meta, for_training=True)
                 continue
@@ -2079,10 +2542,11 @@ def worker_train(level: Level, device_name: str, dtype: str, vram_cap: float | N
         result.update(status="FAIL_OOM", evidence="measured")
         emit_result(result)
         return result
+    emit_result(result)   # the measurement is on record now; the bonus demo below may overrun the budget
     if level.id == "L1":
         result["demo"] = _train_more_and_demo(policy, pre, post, ds, device, optimizer, lr_scheduler, accelerator,
                                              tracker, cfg, result["batch"], result["update_s"])
-    emit_result(result)
+        emit_result(result)
     return result
 
 
@@ -2100,6 +2564,10 @@ def _train_more_and_demo(policy, pre, post, ds, device, optimizer, lr_scheduler,
     from lerobot.scripts.lerobot_train import update_policy
 
     n_extra = extra_training_steps(update_s)
+    if n_extra < ACT_DEMO_MIN_STEPS:   # a handful of steps changes nothing visible; say so instead of pretending
+        emit("event", "note", f"only {n_extra} extra ACT steps fit the {ACT_DEMO_BUDGET_S} s demo budget at {update_s:.1f} s/step; skipping the after-training demo")
+        return {"status": "SKIPPED", "reason": "too_few_steps", "extra_steps": n_extra,
+                "trained_steps": TRAIN_WARMUP + TRAIN_TIMED}
     loader = torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=True)
     it = iter(loader)
     emit("activity", bi(f"ACT 继续训练 {n_extra} 步", f"training ACT for {n_extra} more steps"))
@@ -2123,18 +2591,24 @@ def _train_more_and_demo(policy, pre, post, ds, device, optimizer, lr_scheduler,
         pre.save_pretrained(ckpt)
         post.save_pretrained(ckpt)
     except Exception as e:  # noqa: BLE001 - the demo does not need the files on disk
-        emit("note", f"checkpoint not saved: {type(e).__name__}")
+        emit("event", "note", f"checkpoint not saved: {type(e).__name__}")
     policy.eval()
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     demo_ds = LeRobotDataset(DATASET_REPO, root=WORK_DIR / "dataset", episodes=[DEMO_EPISODE])   # single frames, no chunks
-    task = str(ds.meta.tasks.index[0])
+    try:
+        task = str(ds.meta.tasks.index[0])
+    except Exception:  # noqa: BLE001
+        task = str(demo_ds[0].get("task", ""))
     state0 = demo_ds[0]["observation.state"].numpy().tolist()
-    demo = run_demo(policy, pre, post, demo_ds, device, task, ds.meta.robot_type or "so101_follower", state0)
+    n_action_steps = int(getattr(policy.config, "n_action_steps", 1))
+    demo = run_demo(policy, pre, post, demo_ds, device, task, ds.meta.robot_type or "so101_follower", state0, n_action_steps)
+    demo["extra_steps"] = n_extra
     demo["trained_steps"] = n_extra + TRAIN_WARMUP + TRAIN_TIMED
     return demo
 
 
 def worker_main(argv: list[str]) -> int:
+    _make_streams_non_fatal()   # the parent reads a pipe; a character it cannot encode must not end the probe
     p = argparse.ArgumentParser(prog="lerobot_doctor --worker")
     p.add_argument("kind", choices=["dataset", "infer", "train"])
     p.add_argument("--level")
@@ -2162,17 +2636,32 @@ CRASH_ENV_KEYS = ("PYTHONIOENCODING", "PYTHONUTF8", "DOCTOR_LAUNCHER", "DOCTOR_T
 
 
 def _make_streams_non_fatal():
-    """A character the console cannot encode becomes '?' instead of a UnicodeEncodeError that ends the run."""
+    """A character the console cannot encode becomes '?' instead of a UnicodeEncodeError that ends the run.
+    On Windows, a console stuck in a legacy code page (a bare `python lerobot_doctor.py` without the
+    launcher's PYTHONIOENCODING) is switched to UTF-8 so the Chinese half is not printed as '?'."""
     for stream in (sys.stdout, sys.stderr):
         try:
-            if hasattr(stream, "reconfigure"):
+            if not hasattr(stream, "reconfigure"):
+                continue
+            enc = getattr(stream, "encoding", None) or "ascii"
+            try:
+                "体检 ✓".encode(enc)
                 stream.reconfigure(errors="replace")
+            except (UnicodeEncodeError, LookupError):
+                if platform.system() == "Windows":
+                    stream.reconfigure(encoding="utf-8", errors="replace")
+                else:
+                    stream.reconfigure(errors="replace")
         except (ValueError, OSError):   # closed or exotic stream: leave it alone
             pass
 
 
-def report_path_for_today() -> Path:
-    return WORK_DIR / f"report-{_dt.date.today().isoformat()}.json"
+def new_report_path() -> Path:
+    """One file per run: two runs on the same day (a failure, then a rerun) must both survive."""
+    return WORK_DIR / f"report-{_dt.datetime.now().strftime('%Y-%m-%d-%H%M')}.json"
+
+
+CURRENT_RUN = {"report": None}   # the report path of this process's run, for the Ctrl-C and crash messages
 
 
 def crash_location(exc: BaseException) -> str:
@@ -2269,6 +2758,8 @@ def report_crash(con: Console, exc: BaseException, role: str, report_path: Path 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--version", action="version",
+                   version=f"LeRobot Doctor {TOOL_VERSION} · lerobot {LEROBOT_VERSION} · python {sys.version.split()[0]} ({sys.executable})")
     p.add_argument("--specs-only", action="store_true", help="stage 1 only; no install, no download")
     p.add_argument("--yes", "-y", action="store_true", help="do not ask before downloading")
     p.add_argument("--skip-install", action="store_true", help="reuse ~/lerobot-doctor/.venv as is")
@@ -2293,28 +2784,34 @@ def main(argv=None) -> int:
     if args.worker is not None:
         return worker_main(args.worker)   # a worker's traceback goes to its log; the parent classifies it
     con = Console(ascii_only=True if args.ascii else None)
-    if args.uninstall:
-        if WORK_DIR.exists():
-            shutil.rmtree(WORK_DIR)
-            con.line(bi(f"已删除 {WORK_DIR}（Hugging Face 缓存保留）", f"removed {WORK_DIR} (Hugging Face cache kept)"))
-        else:
-            con.line(bi("没有要删的东西", "nothing to remove"))
-        return 0
     try:
+        if args.uninstall:   # inside the crash handler: a file still held by an orphaned worker must not end as a bare traceback
+            if WORK_DIR.exists():
+                shutil.rmtree(WORK_DIR)
+                con.line(bi(f"已删除 {WORK_DIR}（环境、日志、报告；Hugging Face 缓存保留）",
+                            f"removed {WORK_DIR} (env, logs, reports; Hugging Face cache kept)"))
+            else:
+                con.line(bi("没有要删的东西", "nothing to remove"))
+            return 0
         return _main(args, con)
     except KeyboardInterrupt:
         con.stop_heartbeat()
         con.line("")
         con.line(bi("已中断。已完成的部分在报告 JSON 里。", "Interrupted. Finished parts are in the report JSON."))
+        if CURRENT_RUN["report"]:
+            con.line(f"  {CURRENT_RUN['report']}")
         return 130
     except Exception as e:  # noqa: BLE001 - anything else is a bug in this tool: log it, say so, keep the window
-        report_path = Path(args.orchestrate) if args.orchestrate else report_path_for_today()
+        report_path = Path(args.orchestrate) if args.orchestrate else CURRENT_RUN["report"]
         return report_crash(con, e, "orchestrator" if args.orchestrate else "launcher", report_path)
 
 
 def _main(args, con: Console) -> int:
     started = time.monotonic()
-    con.line(f"LeRobot Doctor {TOOL_VERSION}  ·  {bi('目标：LeRobot ' + LEROBOT_VERSION + ' + SO-101', 'target: LeRobot ' + LEROBOT_VERSION + ' + SO-101')}")
+    prov = provenance()
+    via = " · ".join(x for x in (prov["doctor_tag"] or "", f"via {prov['launcher']}" if prov["launcher"] else "") if x)
+    con.line(f"LeRobot Doctor {TOOL_VERSION}{f' ({via})' if via else ''}  ·  "
+             f"{bi('目标：LeRobot ' + LEROBOT_VERSION + ' + SO-101', 'target: LeRobot ' + LEROBOT_VERSION + ' + SO-101')}")
     con.start_heartbeat()
 
     if args.orchestrate:
@@ -2325,10 +2822,12 @@ def _main(args, con: Console) -> int:
         logging.basicConfig(level=logging.ERROR)
         logging.getLogger().setLevel(logging.ERROR)
         warnings.filterwarnings("ignore")
+        CURRENT_RUN["report"] = Path(args.orchestrate)
         report = Report(Path(args.orchestrate), json.loads(Path(args.orchestrate).read_text(encoding="utf-8")))
         py = Path(sys.executable)
+        sim = None
         try:
-            orchestrate(args, con, py, report)
+            sim = orchestrate(args, con, py, report)
         finally:
             report.data["seconds"] = round(time.monotonic() - started + report.data.get("seconds", 0))
             report.data["finished_at"] = now_iso()
@@ -2338,10 +2837,15 @@ def _main(args, con: Console) -> int:
         report.data["verdicts"] = verdicts
         report.save()
         render_report(con, report.data, verdicts, report.path)
-        if con.tty and not args.no_sim:
+        if con.tty and sim is not None:   # only when the page really exists
             try:   # keep the 3D page alive until the user has looked at everything
                 input(bi("回车退出（浏览器里的 3D 页面随之关闭）", "Enter to exit (the 3D page closes with it)") + " > ")
             except EOFError:
+                pass
+        if sim is not None:
+            try:
+                sim.close()
+            except Exception:  # noqa: BLE001 - shutting down; nothing left to protect
                 pass
         return 0
 
@@ -2359,8 +2863,9 @@ def _main(args, con: Console) -> int:
     floors = hard_floors(specs)
     est = estimate_table(specs)
     print_estimate(con, est)
-    report_path = report_path_for_today()
-    report = Report(report_path, {"schema": 1, "tool_version": TOOL_VERSION, "lerobot_version": LEROBOT_VERSION,
+    report_path = new_report_path()
+    CURRENT_RUN["report"] = report_path
+    report = Report(report_path, {"schema": 1, "tool_version": TOOL_VERSION, "lerobot_version": LEROBOT_VERSION, **prov,
                                   "started_at": now_iso(), "specs": specs, "floors": floors, "estimate": est,
                                   "install": {"status": "NOT_RUN"}, "levels": {}})
     if floors:
@@ -2380,8 +2885,12 @@ def _main(args, con: Console) -> int:
     con.step(2, total_steps, "确认", "confirm")
     con.line(bi("接下来会：建一个独立的 Python 环境（约 7 GB）→ 装 LeRobot 0.6.1 → 下载样例数据与三个预训练模型（约 13 GB）→ 五个策略逐个真跑。",
                 "Next: create a private Python env (~7 GB) -> install LeRobot 0.6.1 -> download sample data and three pretrained models (~13 GB) -> run five policies for real."))
-    con.line(bi("全程 30–90 分钟，取决于网速与机器。中途 Ctrl-C 可停，已完成部分会保留。",
-                "30-90 minutes depending on network and machine. Ctrl-C stops; finished parts are kept."))
+    if specs["accelerator"] == "cpu":
+        con.line(bi("全程约 1–2.5 小时：CPU 上每级推理与训练都慢，多数训练探针会到预算即停。中途 Ctrl-C 可停，已完成部分会保留。",
+                    "About 1 to 2.5 hours: every inference and training probe is slow on a CPU, and most training probes stop at their budget. Ctrl-C stops; finished parts are kept."))
+    else:
+        con.line(bi("全程 30–60 分钟，取决于网速与机器。中途 Ctrl-C 可停，已完成部分会保留。",
+                    "30-60 minutes depending on network and machine. Ctrl-C stops; finished parts are kept."))
     if not args.yes and con.tty:
         try:
             input(bi("回车继续，Ctrl-C 退出", "Enter to continue, Ctrl-C to quit") + " > ")
@@ -2390,27 +2899,24 @@ def _main(args, con: Console) -> int:
 
     # ---- install ------------------------------------------------------------------------------
     con.step(3, total_steps, f"安装 LeRobot {LEROBOT_VERSION}", f"installing LeRobot {LEROBOT_VERSION}", "5–20 min")
-    if args.use_current_env:
-        py = Path(sys.executable)
-        probe = subprocess.run([str(py), "-c", IMPORT_PROBE], capture_output=True, text=True)
-        if probe.returncode != 0:
-            report.data["install"] = {"status": "FAIL", "reason": "current env cannot import lerobot/torch/viser", "stderr": probe.stderr[-2000:]}
-            report.save()
-            con.item("bad", "当前环境导入 lerobot / torch / viser 失败", "current env cannot import lerobot / torch / viser")
-            return 1
-        report.data["install"] = {"status": "PASS", "reused": True, **json.loads(probe.stdout.strip().splitlines()[-1])}
-    elif args.skip_install and venv_python(WORK_DIR / ".venv").exists():
-        py = venv_python(WORK_DIR / ".venv")
-        probe = subprocess.run([str(py), "-c", IMPORT_PROBE], capture_output=True, text=True)
-        report.data["install"] = {"status": "PASS" if probe.returncode == 0 else "FAIL", "reused": True,
-                                  **(json.loads(probe.stdout.strip().splitlines()[-1]) if probe.returncode == 0 else {"stderr": probe.stderr[-2000:]})}
+    if args.use_current_env or (args.skip_install and venv_python(WORK_DIR / ".venv").exists()):
+        py = Path(sys.executable) if args.use_current_env else venv_python(WORK_DIR / ".venv")
+        rc, info, err = import_probe(py)
+        if rc != 0 or info is None:
+            report.data["install"] = {"status": "FAIL", "reused": True, "reason": "existing env cannot import lerobot/torch/viser",
+                                      "stderr": err, "log": ""}
+        else:
+            report.data["install"] = {"status": "PASS", "reused": True, **info}
+            if info.get("lerobot") != LEROBOT_VERSION:   # a stale venv: the report must say what it measured
+                report.data["install"]["version_mismatch"] = info.get("lerobot")
+                con.item("warn", f"已有环境里的 lerobot 是 {info.get('lerobot')}，不是 {LEROBOT_VERSION}；这次就按它测，报告会注明",
+                         f"the existing env has lerobot {info.get('lerobot')}, not {LEROBOT_VERSION}; testing with it, the report says so")
     else:
         py = build_env(con, specs, report.data, args)
     report.save()
     inst = report.data["install"]
     if inst.get("status") != "PASS" or py is None:
-        con.item("bad", f"LeRobot {LEROBOT_VERSION} 装不上：{inst.get('reason', '')}  日志 {inst.get('log', '')}",
-                 f"LeRobot {LEROBOT_VERSION} did not install: {inst.get('reason', '')}  log {inst.get('log', '')}")
+        con.item("bad", *install_failure_text(inst))
         report.data["seconds"] = round(time.monotonic() - started)
         report.save()
         con.stop_heartbeat()

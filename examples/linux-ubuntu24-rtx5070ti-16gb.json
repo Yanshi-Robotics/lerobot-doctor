@@ -1,8 +1,14 @@
 {
   "schema": 1,
-  "tool_version": "0.1.0",
+  "tool_version": "0.1.6",
   "lerobot_version": "0.6.1",
-  "started_at": "2026-09-19T09:42:46",
+  "doctor_tag": null,
+  "launcher": null,
+  "python": {
+    "version": "3.12.3",
+    "executable": "<venv>/bin/python"
+  },
+  "started_at": "2026-09-20T10:57:55",
   "specs": {
     "system": "Linux",
     "os": "Ubuntu 24.04.4 LTS",
@@ -13,7 +19,7 @@
     "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
     "cpu_count": 16,
     "ram_gb": 49.6,
-    "disk_free_gb": 890.2,
+    "disk_free_gb": 885.8,
     "python": "3.12.3",
     "ffmpeg": true,
     "nvidia": [
@@ -27,6 +33,7 @@
     "other_gpus": [
       "AMD"
     ],
+    "gpu_query_failed": false,
     "accelerator": "cuda",
     "device_mem_gb": 15.9,
     "bf16": true,
@@ -95,30 +102,40 @@
         "status": "PASS",
         "evidence": "measured",
         "params": 51597190,
-        "load_s": 0.9,
+        "load_s": 0.8,
         "n_action_steps": 100,
         "device": "cuda",
         "dtype": "bfloat16",
-        "latency_ms": 7.5,
-        "p95_ms": 8.3,
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 7.2,
+        "p95_ms": 7.7,
         "budget_ms": 3333,
         "timed_calls": 20,
         "peak_gb": 0.29,
         "demo": {
           "status": "PASS",
           "steps": 300,
-          "seconds": 10.0,
-          "hz": 29.9,
-          "mean_abs_err_deg": 25.76
+          "of_steps": 300,
+          "seconds": 10.1,
+          "hz": 29.8,
+          "target_hz": 30,
+          "refill_ms": 7.3,
+          "decode_s": 2.2,
+          "mean_abs_err_deg": 27.58
         },
-        "seconds": 14.6,
-        "log": "/home/jeff/lerobot-doctor/logs/L1-infer.log",
+        "seconds": 16.2,
+        "log": "~/lerobot-doctor/logs/L1-infer.log",
         "demo_after_training": {
           "status": "PASS",
           "steps": 300,
+          "of_steps": 300,
           "seconds": 10.0,
           "hz": 29.9,
-          "mean_abs_err_deg": 10.47,
+          "target_hz": 30,
+          "refill_ms": 7.8,
+          "decode_s": 1.9,
+          "mean_abs_err_deg": 7.9,
+          "extra_steps": 300,
           "trained_steps": 313
         }
       },
@@ -130,25 +147,30 @@
         "attempts": [
           {
             "batch": 8,
-            "update_s": 0.12,
+            "update_s": 0.118,
             "peak_gb": 3.95,
-            "loss": 30.8753
+            "loss": 40.9231
           }
         ],
         "params": 51597190,
         "batch": 8,
-        "update_s": 0.12,
+        "update_s": 0.118,
         "peak_gb": 3.95,
         "demo": {
           "status": "PASS",
           "steps": 300,
+          "of_steps": 300,
           "seconds": 10.0,
           "hz": 29.9,
-          "mean_abs_err_deg": 10.47,
+          "target_hz": 30,
+          "refill_ms": 7.8,
+          "decode_s": 1.9,
+          "mean_abs_err_deg": 7.9,
+          "extra_steps": 300,
           "trained_steps": 313
         },
-        "seconds": 73.9,
-        "log": "/home/jeff/lerobot-doctor/logs/L1-train.log",
+        "seconds": 70.9,
+        "log": "~/lerobot-doctor/logs/L1-train.log",
         "hours": 0.9
       }
     },
@@ -157,24 +179,29 @@
         "status": "MARGINAL",
         "evidence": "measured",
         "params": 277819846,
-        "load_s": 1.2,
+        "load_s": 1.3,
         "n_action_steps": 32,
         "device": "cuda",
         "dtype": "bfloat16",
-        "latency_ms": 666.4,
-        "p95_ms": 678.6,
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 654.6,
+        "p95_ms": 658.0,
         "budget_ms": 1067,
         "timed_calls": 20,
         "peak_gb": 1.26,
         "demo": {
-          "status": "PASS",
+          "status": "SLOW",
           "steps": 300,
-          "seconds": 16.5,
-          "hz": 18.2,
-          "mean_abs_err_deg": 42.5
+          "of_steps": 300,
+          "seconds": 16.2,
+          "hz": 18.5,
+          "target_hz": 30,
+          "refill_ms": 652.0,
+          "decode_s": 1.9,
+          "mean_abs_err_deg": 43.26
         },
-        "seconds": 36.1,
-        "log": "/home/jeff/lerobot-doctor/logs/L2-infer.log"
+        "seconds": 37.4,
+        "log": "~/lerobot-doctor/logs/L2-infer.log"
       },
       "train": {
         "status": "PASS",
@@ -184,17 +211,17 @@
         "attempts": [
           {
             "batch": 8,
-            "update_s": 0.192,
+            "update_s": 0.188,
             "peak_gb": 8.96,
-            "loss": 1.0634
+            "loss": 1.077
           }
         ],
         "params": 277819846,
         "batch": 8,
-        "update_s": 0.192,
+        "update_s": 0.188,
         "peak_gb": 8.96,
-        "seconds": 8.1,
-        "log": "/home/jeff/lerobot-doctor/logs/L2-train.log",
+        "seconds": 7.9,
+        "log": "~/lerobot-doctor/logs/L2-train.log",
         "hours": 1.5
       }
     },
@@ -203,24 +230,29 @@
         "status": "PASS",
         "evidence": "measured",
         "params": 450046176,
-        "load_s": 47.5,
+        "load_s": 37.7,
         "n_action_steps": 50,
         "device": "cuda",
         "dtype": "bfloat16",
-        "latency_ms": 78.9,
-        "p95_ms": 83.3,
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 78.2,
+        "p95_ms": 80.0,
         "budget_ms": 1667,
         "timed_calls": 20,
         "peak_gb": 0.97,
         "demo": {
           "status": "PASS",
           "steps": 300,
-          "seconds": 10.7,
-          "hz": 28.1,
-          "mean_abs_err_deg": 52.59
+          "of_steps": 300,
+          "seconds": 10.3,
+          "hz": 29.1,
+          "target_hz": 30,
+          "refill_ms": 79.6,
+          "decode_s": 2.0,
+          "mean_abs_err_deg": 53.14
         },
-        "seconds": 63.3,
-        "log": "/home/jeff/lerobot-doctor/logs/L3-infer.log"
+        "seconds": 54.9,
+        "log": "~/lerobot-doctor/logs/L3-infer.log"
       },
       "train": {
         "status": "PASS",
@@ -230,17 +262,17 @@
         "attempts": [
           {
             "batch": 8,
-            "update_s": 0.128,
+            "update_s": 0.126,
             "peak_gb": 3.17,
-            "loss": 0.8098
+            "loss": 0.8293
           }
         ],
         "params": 450046176,
         "batch": 8,
-        "update_s": 0.128,
+        "update_s": 0.126,
         "peak_gb": 3.17,
-        "seconds": 48.7,
-        "log": "/home/jeff/lerobot-doctor/logs/L3-train.log",
+        "seconds": 39.6,
+        "log": "~/lerobot-doctor/logs/L3-train.log",
         "hours": 1.0
       }
     },
@@ -249,24 +281,29 @@
         "status": "PASS",
         "evidence": "measured",
         "params": 879738545,
-        "load_s": 13.8,
+        "load_s": 23.3,
         "n_action_steps": 30,
         "device": "cuda",
         "dtype": "bfloat16",
-        "latency_ms": 65.0,
-        "p95_ms": 65.9,
+        "timing_mode": "reset_per_chunk",
+        "latency_ms": 63.3,
+        "p95_ms": 64.3,
         "budget_ms": 1000,
         "timed_calls": 20,
         "peak_gb": 1.86,
         "demo": {
           "status": "PASS",
           "steps": 300,
-          "seconds": 10.4,
-          "hz": 28.8,
+          "of_steps": 300,
+          "seconds": 10.3,
+          "hz": 29.1,
+          "target_hz": 30,
+          "refill_ms": 63.2,
+          "decode_s": 1.9,
           "mean_abs_err_deg": 52.16
         },
-        "seconds": 29.2,
-        "log": "/home/jeff/lerobot-doctor/logs/L4-infer.log"
+        "seconds": 40.4,
+        "log": "~/lerobot-doctor/logs/L4-infer.log"
       },
       "train": {
         "status": "PASS",
@@ -276,22 +313,18 @@
         "attempts": [
           {
             "batch": 8,
-            "status": "FAIL_OOM"
-          },
-          {
-            "batch": 4,
-            "update_s": 0.199,
-            "peak_gb": 9.05,
-            "loss": 509.6923
+            "update_s": 0.299,
+            "peak_gb": 12.47,
+            "loss": 463.0769
           }
         ],
         "params": 879738545,
-        "batch": 4,
-        "update_s": 0.199,
-        "peak_gb": 9.05,
-        "seconds": 41.8,
-        "log": "/home/jeff/lerobot-doctor/logs/L4-train.log",
-        "hours": 3.1
+        "batch": 8,
+        "update_s": 0.299,
+        "peak_gb": 12.47,
+        "seconds": 24.7,
+        "log": "~/lerobot-doctor/logs/L4-train.log",
+        "hours": 2.3
       }
     },
     "L5": {
@@ -314,7 +347,7 @@
       }
     }
   },
-  "seconds": 329,
+  "seconds": 303,
   "dataset": {
     "status": "PASS",
     "frames": 1197,
@@ -326,9 +359,9 @@
     "fps": 30,
     "task": "pink lego brick into the transparent box",
     "video_backend": "pyav",
-    "root": "/home/jeff/lerobot-doctor/dataset",
+    "root": "~/lerobot-doctor/dataset",
     "seconds": 2.6,
-    "log": "/home/jeff/lerobot-doctor/logs/dataset.log"
+    "log": "~/lerobot-doctor/logs/dataset.log"
   },
   "weights": {
     "L3": {
@@ -350,7 +383,7 @@
       "gated": false
     }
   },
-  "finished_at": "2026-09-19T09:48:14",
+  "finished_at": "2026-09-20T11:02:58",
   "verdicts": {
     "install": "PASS",
     "levels": {
@@ -358,8 +391,8 @@
         "infer": {
           "mark": "ok",
           "evidence": "measured",
-          "zh": "本地实时推理（每块 8 ms，预算 3333 ms）；模拟执行 10 s ✅，控制 30 Hz",
-          "en": "real-time local inference (8 ms per chunk, budget 3333 ms); simulated task 10 s OK at 30 Hz"
+          "zh": "本地实时推理（每块 7 ms，p95 8，预算 3333 ms）；模拟执行 10.1 s 通过，控制 30 Hz",
+          "en": "real-time local inference (7 ms per chunk, p95 8, budget 3333 ms); simulated task 10.1 s OK at 30 Hz"
         },
         "train": {
           "mark": "ok",
@@ -373,8 +406,8 @@
         "infer": {
           "mark": "warn",
           "evidence": "measured",
-          "zh": "本地可推理但接近上限（每块 666 ms，预算 1067 ms）；建议相机降到 320×240 或加长 chunk；模拟执行 10 s ✅，控制 18 Hz",
-          "en": "local inference works but near the limit (666 ms per chunk, budget 1067 ms); lower cameras to 320x240 or lengthen the chunk; simulated task 10 s OK at 18 Hz"
+          "zh": "本地可推理但接近上限（每块 655 ms，p95 658，预算 1067 ms）；建议相机降到 320×240 或加长 chunk；模拟执行跑完但只有 18 Hz（目标 30），用了 16.2 s，每块等 652 ms",
+          "en": "local inference works but near the limit (655 ms per chunk, p95 658, budget 1067 ms); lower cameras to 320x240 or lengthen the chunk; simulated task finished but only 18 Hz (target 30), took 16.2 s, 652 ms wait per chunk"
         },
         "train": {
           "mark": "ok",
@@ -388,8 +421,8 @@
         "infer": {
           "mark": "ok",
           "evidence": "measured",
-          "zh": "本地实时推理（每块 79 ms，预算 1667 ms）；模拟执行 10 s ✅，控制 28 Hz",
-          "en": "real-time local inference (79 ms per chunk, budget 1667 ms); simulated task 10 s OK at 28 Hz"
+          "zh": "本地实时推理（每块 78 ms，p95 80，预算 1667 ms）；模拟执行 10.3 s 通过，控制 29 Hz",
+          "en": "real-time local inference (78 ms per chunk, p95 80, budget 1667 ms); simulated task 10.3 s OK at 29 Hz"
         },
         "train": {
           "mark": "ok",
@@ -403,13 +436,13 @@
         "infer": {
           "mark": "ok",
           "evidence": "measured",
-          "zh": "本地实时推理（每块 65 ms，预算 1000 ms）；模拟执行 10 s ✅，控制 29 Hz",
-          "en": "real-time local inference (65 ms per chunk, budget 1000 ms); simulated task 10 s OK at 29 Hz"
+          "zh": "本地实时推理（每块 63 ms，p95 64，预算 1000 ms）；模拟执行 10.3 s 通过，控制 29 Hz",
+          "en": "real-time local inference (63 ms per chunk, p95 64, budget 1000 ms); simulated task 10.3 s OK at 29 Hz"
         },
         "train": {
           "mark": "warn",
-          "zh": "本地可训练，过一夜（batch 4，每步 0.20 s，参考任务约 3.1 小时）",
-          "en": "trainable locally overnight (batch 4, 0.20 s per step, ~3.1 h for the reference task)",
+          "zh": "本地可训练，过一夜（batch 8，每步 0.30 s，参考任务约 2.3 小时）",
+          "en": "trainable locally overnight (batch 8, 0.30 s per step, ~2.3 h for the reference task)",
           "cloud": false,
           "evidence": "measured"
         }
@@ -431,7 +464,7 @@
       }
     },
     "basics": {
-      "mark": "ok"
+      "mark": "skip"
     },
     "route": {
       "rule": "R1",
@@ -441,8 +474,8 @@
     },
     "notes": [
       [
-        "torchcodec 不可用，视频解码走 pyav：正常，只是慢一点。",
-        "torchcodec unavailable, video decoding uses pyav: fine, just slower."
+        "torchcodec 不可用，视频解码走 pyav：不影响任何结论，只让下载后的准备阶段慢一些。",
+        "torchcodec unavailable, video decoding uses pyav: no verdict depends on it; only the preparation after downloads is slower."
       ]
     ]
   }
