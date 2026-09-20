@@ -51,6 +51,12 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(doc.parse_meminfo("MemTotal:       48441044 kB\nMemFree: 1 kB"), 49.6)
         self.assertEqual(doc.parse_os_release('NAME="Ubuntu"\nPRETTY_NAME="Ubuntu 24.04 LTS"\n'), "Ubuntu 24.04 LTS")
 
+    def test_windows_11_from_build(self):
+        self.assertEqual(doc.windows_release_name("10", "10.0.22631"), "11")
+        self.assertEqual(doc.windows_release_name("10", "10.0.19045"), "10")
+        self.assertEqual(doc.windows_release_name("8.1", "6.3.9600"), "8.1")
+        self.assertEqual(doc.windows_release_name("10", ""), "10")
+
 
 class AcceleratorTests(unittest.TestCase):
     def test_modern_nvidia_is_cuda_bf16(self):
@@ -229,6 +235,14 @@ def V(infer_mark, infer_ev="measured", train_mark="skip", cloud=None):
     return {"infer": {"mark": infer_mark, "evidence": infer_ev, "zh": "z", "en": "e"},
             "train": {"mark": train_mark, "evidence": "measured", "cloud": cloud, "zh": "z", "en": "e"}}
 
+    def test_crashed_probe_names_error_and_log(self):
+        r = {"status": "FAIL_CRASH", "error": "KeyError: 'observation.images.up'", "log": "/x/logs/L3-infer.log"}
+        v = doc.infer_verdict(L["L3"], r)
+        self.assertEqual(v["mark"], "skip")
+        for text in (v["zh"], v["en"]):
+            self.assertIn("KeyError", text)
+            self.assertIn("/x/logs/L3-infer.log", text)
+
 
 class RouteTests(unittest.TestCase):
     def test_r1_picks_highest_fully_local_level(self):
@@ -330,6 +344,105 @@ class ReleaseConsistencyTests(unittest.TestCase):
         for readme in (ROOT / "README.md", ROOT / "docs" / "i18n" / "zh" / "README.md"):
             tags = set(re.findall(r"lerobot-doctor/(v\d+\.\d+\.\d+)/", readme.read_text(encoding="utf-8")))
             self.assertEqual(tags, {tag}, readme)
+
+    def test_ps1_is_pure_ascii(self):
+        """Windows PowerShell 5.1 reads a BOM-less .ps1 in the ANSI code page and a BOM breaks `irm | iex`."""
+        raw = (ROOT / "doctor.ps1").read_bytes()
+        bad = [i for i, b in enumerate(raw) if b >= 0x80]
+        self.assertEqual(bad, [], f"non-ASCII byte at offset {bad[:1]}")
+
+    def test_ps1_exits_only_in_file_mode(self):
+        """Under `irm | iex` a top-level `exit` closes the user's own window; the only exit sits
+        inside the `if ($PSScriptRoot)` block, which is true only when started as a file."""
+        import re
+        lines = (ROOT / "doctor.ps1").read_text(encoding="ascii").splitlines()
+        exits = [i for i, l in enumerate(lines) if re.match(r"\s*exit\b", l)]
+        self.assertEqual(len(exits), 1, exits)
+        start = next(i for i, l in enumerate(lines) if l.startswith("if ($PSScriptRoot) {"))
+        self.assertGreater(exits[0], start)
+        self.assertTrue(all(not l.startswith("}") for l in lines[start + 1:exits[0]]), "exit is outside the block")
+
+    def test_ps1_chinese_escapes_match_the_readable_table(self):
+        import codecs
+        import re
+        src = (ROOT / "doctor.ps1").read_text(encoding="ascii")
+        literals = re.findall(r"'((?:[^']*\\u[0-9a-fA-F]{4}[^']*)+)'", src)
+        decoded = {codecs.decode(lit, "unicode_escape") for lit in literals}
+        self.assertEqual(decoded, set(PS1_ZH.values()))
+
+    def test_every_launcher_announces_itself(self):
+        """DOCTOR_LAUNCHER tells the program that something outside it will hold the window open."""
+        self.assertIn('$env:DOCTOR_LAUNCHER = "ps1"', (ROOT / "doctor.ps1").read_text(encoding="ascii"))
+        self.assertIn('set "DOCTOR_LAUNCHER=bat"', (ROOT / "doctor.bat").read_text(encoding="utf-8"))
+        self.assertIn("export DOCTOR_LAUNCHER=sh", (ROOT / "doctor.sh").read_text(encoding="utf-8"))
+
+
+# Readable form of every \u-escaped string in doctor.ps1 (the file itself must stay pure ASCII).
+PS1_ZH = {
+    "downloading": "下载体检程序",
+    "installing uv": "安装 uv（Python 环境管理器，约 30 MB）",
+    "preparing Python": "准备 Python 3.12",
+    "uv could not start (before the code)": "uv 没能把体检程序跑起来，看上面的输出（退出码 ",
+    "uv could not start (after the code)": "）",
+    "launcher failed": "启动器出错了，体检没有开始",
+    "step": "卡在",
+    "error": "错误",
+    "network hint": "最常见是网络问题：重试一次；下载慢可以把 HF_ENDPOINT 设成镜像",
+    "report it": "报 issue 请把这个窗口截图贴上去",
+    "press Enter": "按回车关闭窗口",
+}
+
+
+class CrashHandlerTests(unittest.TestCase):
+    """An unexpected exception must end in a crash log and a message that names it, never a bare exit."""
+
+    def _run_main_raising(self, exc):
+        import contextlib
+        import os
+        import tempfile
+        from unittest.mock import patch
+        out, err = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(doc, "WORK_DIR", Path(tmp)), \
+                patch.object(doc, "_main", side_effect=exc), \
+                patch.dict(os.environ, {"DOCTOR_LAUNCHER": "test"}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = doc.main(["--specs-only", "--ascii"])
+            logs = sorted((Path(tmp) / "logs").glob("crash-*.log"))
+            texts = [p.read_text(encoding="utf-8") for p in logs]
+        return rc, out.getvalue(), err.getvalue(), logs, texts
+
+    def test_unexpected_exception_writes_crash_log_and_says_where(self):
+        rc, out, err, logs, texts = self._run_main_raising(RuntimeError("boom"))
+        self.assertEqual(rc, doc.EXIT_CRASH)
+        self.assertEqual(len(logs), 1)
+        for needle in ("LeRobot Doctor", "role: launcher", "platform:", "python:", "Traceback", "RuntimeError: boom"):
+            self.assertIn(needle, texts[0])
+        self.assertIn(str(logs[0]), out)              # the path is on screen
+        self.assertIn("RuntimeError: boom", out)      # and so is the reason
+        self.assertIn(doc.ISSUES_URL, out)
+        self.assertIn("Traceback", err)               # the full traceback stays on stderr
+
+    def test_keyboard_interrupt_still_returns_130(self):
+        rc, out, err, logs, _ = self._run_main_raising(KeyboardInterrupt())
+        self.assertEqual(rc, 130)
+        self.assertEqual(logs, [])
+
+    def test_crash_log_falls_back_to_the_temp_dir(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.NamedTemporaryFile() as f:            # a file: mkdir under it fails on every OS
+            try:
+                raise ValueError("no home")
+            except ValueError as e:
+                with patch.object(doc, "WORK_DIR", Path(f.name) / "lerobot-doctor"):
+                    path = doc.write_crash_log(e, "test", None)
+        try:
+            self.assertEqual(path.parent, Path(tempfile.gettempdir()))
+            self.assertTrue(path.name.startswith("lerobot-doctor-crash-"))
+            self.assertIn("ValueError: no home", path.read_text(encoding="utf-8"))
+        finally:
+            path.unlink()
 
 
 class WorkerProtocolTests(unittest.TestCase):

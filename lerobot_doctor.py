@@ -29,8 +29,10 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -40,13 +42,16 @@ from types import SimpleNamespace
 # Constants. Every threshold is named and carries its source; nothing is tuned per machine.
 # ----------------------------------------------------------------------------------------------
 
-TOOL_VERSION = "0.1.3"
+TOOL_VERSION = "0.1.4"
 LEROBOT_VERSION = "0.6.1"
 PYTHON_VERSION = "3.12"                         # lerobot 0.6.1: Requires-Python >=3.12
 VISER_SPEC = "viser[urdf]==1.1.0"               # same pin as the Season-1 course repo
 LEROBOT_EXTRAS = "smolvla,xvla,wallx,diffusion,dataset,feetech,accelerate-dep"
 WORK_DIR = Path.home() / "lerobot-doctor"
 DEFAULT_PORT = 4604                             # yanshirobotics 46xx range; 127.0.0.1 only
+ISSUES_URL = "https://github.com/Yanshi-Robotics/lerobot-doctor/issues/new"
+EXIT_CRASH = 70                                 # sysexits.h EX_SOFTWARE: the tool itself failed, not the machine
+WINDOWS_11_FIRST_BUILD = 22000                  # platform.win32_ver() says "10" for Windows 11; the build tells them apart
 
 MIN_FREE_DISK_GB = 30      # venv ~7.5 GB + three checkpoints ~13 GB + dataset + headroom
 MIN_RAM_GB = 8             # below this torch import + any model load fails
@@ -386,6 +391,14 @@ def parse_os_release(text: str) -> str:
     return m.group(1) if m else ""
 
 
+def windows_release_name(release: str, version: str) -> str:
+    """Pure. platform.win32_ver() reports Windows 11 as release "10" with version "10.0.22xxx"."""
+    m = re.match(r"\d+\.\d+\.(\d+)", version or "")
+    if release == "10" and m and int(m.group(1)) >= WINDOWS_11_FIRST_BUILD:
+        return "11"
+    return release
+
+
 def find_nvidia_smi() -> str | None:
     found = shutil.which("nvidia-smi")
     if found:
@@ -445,6 +458,7 @@ def collect_specs() -> dict:
             specs["arch"] = "arm64 (Python running under Rosetta as x86_64)"
     elif system == "Windows":
         rel, ver, *_ = platform.win32_ver()
+        rel = windows_release_name(rel, ver)
         specs["os"] = f"Windows {rel} ({ver})"
         specs["windows_release"] = rel
         try:
@@ -913,12 +927,16 @@ def infer_verdict(level: Level, r: dict) -> dict:
                 "zh": f"本地装不下（加载时{what}耗尽）", "en": f"does not fit locally (ran out of {'VRAM' if r.get('device') == 'cuda' else 'memory'} while loading)"}
     if st == "SKIPPED_FLOOR":
         return {"mark": "bad", "evidence": "floor", "zh": f"本地装不下：{r.get('zh', '')}", "en": f"does not fit locally: {r.get('en', '')}"}
+    # "see log" is useless without the log's path and the line that failed; run_worker recorded both.
+    err, log = (r.get("error") or "")[:200], r.get("log") or ""
+    seen_zh = (f"（{err}）" if err else "") + (f"，日志 {log}" if log else "")
+    seen_en = (f" ({err})" if err else "") + (f", log {log}" if log else "")
     reasons = {
         "BLOCKED_GATED": ("未测：这个模型的仓库要先在 Hugging Face 上同意许可并登录", "not tested: this model's repo needs a Hugging Face login and license acceptance"),
-        "FAIL_DEP": ("未测：依赖没装上（见日志）", "not tested: a dependency is missing (see log)"),
+        "FAIL_DEP": (f"未测：依赖没装上{seen_zh}", f"not tested: a dependency is missing{seen_en}"),
         "FAIL_DOWNLOAD": ("未测：下载失败（网络）", "not tested: download failed (network)"),
-        "TIMEOUT": ("未测：预算时间内没跑完（磁盘或网络极慢），见日志", "not tested: did not finish within budget (very slow disk or network), see log"),
-        "FAIL_CRASH": ("未测：程序异常，见日志。这是工具或环境的问题，不是你电脑的结论", "not tested: the probe crashed, see log. That is a tool/environment problem, not a verdict about your machine"),
+        "TIMEOUT": (f"未测：预算时间内没跑完（磁盘或网络极慢）{seen_zh}", f"not tested: did not finish within budget (very slow disk or network){seen_en}"),
+        "FAIL_CRASH": (f"未测：程序异常{seen_zh}。这是工具或环境的问题，不是你电脑的结论", f"not tested: the probe crashed{seen_en}. That is a tool/environment problem, not a verdict about your machine"),
         "NOT_RUN": (r.get("zh", "未测"), r.get("en", "not tested")),
     }
     zh, en = reasons.get(st, reasons["NOT_RUN"])
@@ -2101,6 +2119,116 @@ def worker_main(argv: list[str]) -> int:
 
 
 # ----------------------------------------------------------------------------------------------
+# Crash handling. The tool's own failure must never end as a blank, closed window: write a log with
+# everything a bug report needs, say where it is, and on Windows wait for Enter when nobody else will.
+# ----------------------------------------------------------------------------------------------
+
+CRASH_ENV_KEYS = ("PYTHONIOENCODING", "PYTHONUTF8", "DOCTOR_LAUNCHER", "DOCTOR_TAG", "HF_ENDPOINT", "UV_HTTP_TIMEOUT")
+
+
+def _make_streams_non_fatal():
+    """A character the console cannot encode becomes '?' instead of a UnicodeEncodeError that ends the run."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(errors="replace")
+        except (ValueError, OSError):   # closed or exotic stream: leave it alone
+            pass
+
+
+def report_path_for_today() -> Path:
+    return WORK_DIR / f"report-{_dt.date.today().isoformat()}.json"
+
+
+def crash_location(exc: BaseException) -> str:
+    """`lerobot_doctor.py:123 in collect_specs`: the innermost frame of this file, else of anything."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return "?"
+    ours = [f for f in frames if Path(f.filename).name == Path(__file__).name]
+    f = (ours or frames)[-1]
+    return f"{Path(f.filename).name}:{f.lineno} in {f.name}"
+
+
+def _log_listing(logs: Path) -> str:
+    try:
+        return ", ".join(f"{p.name} ({p.stat().st_size} B)" for p in sorted(logs.glob("*.log"))) or "(none)"
+    except OSError:
+        return "(unreadable)"
+
+
+def write_crash_log(exc: BaseException, role: str, report_path: Path | None) -> Path:
+    """Everything a bug report needs, in one file. Falls back to the temp dir if WORK_DIR is not writable."""
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    logs = WORK_DIR / "logs"
+    text = "\n".join([
+        f"LeRobot Doctor {TOOL_VERSION} crash report",
+        f"time: {now_iso()}",
+        f"role: {role}",
+        f"platform: {platform.platform()} ({platform.machine()})",
+        f"python: {sys.version.split()[0]} at {sys.executable}",
+        f"argv: {sys.argv}",
+        f"cwd: {os.getcwd()}",
+        f"stdout: encoding={getattr(sys.stdout, 'encoding', None)} tty={bool(getattr(sys.stdout, 'isatty', lambda: False)())} "
+        f"columns={shutil.get_terminal_size((0, 0)).columns}",
+        "env: " + " ".join(f"{k}={os.environ.get(k)!r}" for k in CRASH_ENV_KEYS),
+        f"report: {report_path}",
+        f"logs in {logs}: {_log_listing(logs)}",
+        "",
+        "".join(traceback.format_exception(exc)),
+    ])
+    for folder in (logs, Path(tempfile.gettempdir())):
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / (f"crash-{stamp}.log" if folder == logs else f"lerobot-doctor-crash-{stamp}.log")
+            path.write_text(text, encoding="utf-8")
+            return path
+        except OSError:
+            continue
+    return Path("(could not write a crash log anywhere)")
+
+
+def _pause_if_window_would_close():
+    """Only when nothing else keeps the window open: a Windows console with no launcher around it.
+    doctor.bat / doctor.ps1 set DOCTOR_LAUNCHER and pause themselves; a Linux/macOS terminal stays."""
+    if platform.system() != "Windows" or os.environ.get("DOCTOR_LAUNCHER"):
+        return
+    try:
+        if sys.stdin and sys.stdin.isatty():
+            input(bi("按回车关闭窗口", "Press Enter to close") + " > ")
+    except (EOFError, OSError):
+        pass
+
+
+def report_crash(con: Console, exc: BaseException, role: str, report_path: Path | None) -> int:
+    """The last line of defence. Nothing in here may raise."""
+    try:
+        con.stop_heartbeat()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        path = write_crash_log(exc, role, report_path)
+    except Exception:  # noqa: BLE001 - the log writer must never be the second failure
+        path = Path("(could not write a crash log)")
+    try:
+        traceback.print_exception(exc, file=sys.stderr)   # the full traceback stays on screen
+        sys.stderr.flush()
+        con.line("")
+        con.item("bad", "体检程序自己出错了（这是工具的问题，不是你电脑的结论）",
+                 "The tool itself crashed (a tool problem, not a verdict about your machine)")
+        con.line(f"     {bi('错误', 'error')}: {type(exc).__name__}: {str(exc)[:300]}")
+        con.line(f"     {bi('位置', 'where')}: {crash_location(exc)}")
+        con.line(f"     {bi('崩溃日志', 'crash log')}: {path}")
+        if report_path and report_path.exists():
+            con.line(f"     {bi('报告', 'report')}: {report_path}")
+        con.line(f"     {bi('请把上面的文件贴到这里', 'please attach the file(s) above here')}: {ISSUES_URL}")
+    except Exception:  # noqa: BLE001 - even the pretty printer failed: plain ASCII, no formatting
+        print(f"\nlerobot-doctor crashed: {type(exc).__name__}: {str(exc)[:300]}\ncrash log: {path}\nreport it: {ISSUES_URL}")
+    _pause_if_window_would_close()
+    return EXIT_CRASH
+
+
+# ----------------------------------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------------------------------
 
@@ -2125,9 +2253,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    _make_streams_non_fatal()
     args = build_parser().parse_args(argv)
     if args.worker is not None:
-        return worker_main(args.worker)
+        return worker_main(args.worker)   # a worker's traceback goes to its log; the parent classifies it
     con = Console(ascii_only=True if args.ascii else None)
     if args.uninstall:
         if WORK_DIR.exists():
@@ -2143,6 +2272,9 @@ def main(argv=None) -> int:
         con.line("")
         con.line(bi("已中断。已完成的部分在报告 JSON 里。", "Interrupted. Finished parts are in the report JSON."))
         return 130
+    except Exception as e:  # noqa: BLE001 - anything else is a bug in this tool: log it, say so, keep the window
+        report_path = Path(args.orchestrate) if args.orchestrate else report_path_for_today()
+        return report_crash(con, e, "orchestrator" if args.orchestrate else "launcher", report_path)
 
 
 def _main(args, con: Console) -> int:
@@ -2192,7 +2324,7 @@ def _main(args, con: Console) -> int:
     floors = hard_floors(specs)
     est = estimate_table(specs)
     print_estimate(con, est)
-    report_path = WORK_DIR / f"report-{_dt.date.today().isoformat()}.json"
+    report_path = report_path_for_today()
     report = Report(report_path, {"schema": 1, "tool_version": TOOL_VERSION, "lerobot_version": LEROBOT_VERSION,
                                   "started_at": now_iso(), "specs": specs, "floors": floors, "estimate": est,
                                   "install": {"status": "NOT_RUN"}, "levels": {}})

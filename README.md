@@ -26,24 +26,24 @@ Copy one block (the copy button appears when you hover over it), paste it into a
 macOS, in Terminal:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.3/doctor.sh | bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.sh | bash
 ```
 
 Linux, in a terminal:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.3/doctor.sh | bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.sh | bash
 ```
 
 Windows 10/11, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.3/doctor.ps1 | iex
+irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.ps1 | iex
 ```
 
 Prefer a download: get the ZIP of this repository, unpack it, then double-click `doctor.bat` on Windows, drag `doctor.command` into a Terminal window on macOS, or run `bash doctor.sh` on Linux.
 
-Expect 30 to 90 minutes, most of it downloads (about 7 GB of packages and 13 GB of model weights), and about 30 GB of free disk. The screen always shows what is happening; `Ctrl-C` stops the run and keeps the finished parts. Model weights go to the standard Hugging Face cache, so a later LeRobot course reuses them.
+Expect 30 to 90 minutes, most of it downloads (about 7 GB of packages and 13 GB of model weights), and about 30 GB of free disk. The screen always shows what is happening; `Ctrl-C` stops the run and keeps the finished parts. If the program itself crashes, it writes `~/lerobot-doctor/logs/crash-<time>.log`, prints the path, and on Windows waits for Enter before the window closes; open an issue with that file and the report JSON. Model weights go to the standard Hugging Face cache, so a later LeRobot course reuses them.
 
 ## Key features
 

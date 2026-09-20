@@ -26,24 +26,24 @@
 macOS，在「终端」里：
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.3/doctor.sh | bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.sh | bash
 ```
 
 Linux，在终端里：
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.3/doctor.sh | bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.sh | bash
 ```
 
 Windows 10/11，在 PowerShell 里：
 
 ```powershell
-irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.3/doctor.ps1 | iex
+irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.ps1 | iex
 ```
 
 想下载文件：下载本仓库的 ZIP 并解压，Windows 双击 `doctor.bat`，macOS 把 `doctor.command` 拖进终端窗口，Linux 运行 `bash doctor.sh`。
 
-预计 30 到 90 分钟，大部分是下载（约 7 GB 的包和 13 GB 的模型权重），需要约 30 GB 空闲磁盘。屏幕上一直显示正在做什么；`Ctrl-C` 停止并保留已完成的部分。模型权重放在标准的 Hugging Face 缓存里，之后学 LeRobot 课程时直接复用。
+预计 30 到 90 分钟，大部分是下载（约 7 GB 的包和 13 GB 的模型权重），需要约 30 GB 空闲磁盘。屏幕上一直显示正在做什么；`Ctrl-C` 停止并保留已完成的部分。如果程序自己出错，它会写 `~/lerobot-doctor/logs/crash-<时间>.log` 并把路径打在屏幕上，Windows 下窗口会等你按回车再关；报 issue 时附上这个文件和报告 JSON。模型权重放在标准的 Hugging Face 缓存里，之后学 LeRobot 课程时直接复用。
 
 ## 主要能力
 
