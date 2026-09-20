@@ -26,19 +26,19 @@ Copy one block (the copy button appears when you hover over it), paste it into a
 macOS, in Terminal:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.sh | bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor.sh | bash
 ```
 
 Linux, in a terminal:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.sh | bash
+curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor.sh | bash
 ```
 
 Windows 10/11, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.ps1 | iex
+irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor.ps1 | iex
 ```
 
 Prefer a download: get the ZIP of this repository, unpack it, then double-click `doctor.bat` on Windows, drag `doctor.command` into a Terminal window on macOS, or run `bash doctor.sh` on Linux.

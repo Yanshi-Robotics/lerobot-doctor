@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # LeRobot Doctor launcher for macOS and Linux.
-#   curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/v0.1.4/doctor.sh | bash
+#   curl -LsSf https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor.sh | bash
 # or, from an unpacked zip:   bash doctor.sh
 #
 # It does three things and nothing else: make sure `uv` exists, make sure Python 3.12 exists,

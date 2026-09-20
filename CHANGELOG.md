@@ -21,6 +21,10 @@ Windows: a tester saw the window vanish ("flash crash"). Root causes and the fix
 - Console output can no longer die on a character the terminal cannot encode (`errors="replace"`).
 - Windows 11 is reported as Windows 11 (build >= 22000), not "Windows 10 (10.0.22xxx)".
 - A crashed or timed-out probe names its error line and its log file in the verdict.
+- The Quick start one-liners fetch the launcher from `main`, a URL that never changes (the way uv's
+  and rustup's installers work); the launcher pins the program to the release tag it was published
+  with. Re-running the same command after a release now gets the new release. Commands copied from
+  the 0.1.3 README still point at the `v0.1.3` tag and keep running 0.1.3; copy the command once more.
 
 ## 0.1.3 - 2026-09-19
 

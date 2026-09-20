@@ -332,18 +332,24 @@ class ProgressTests(unittest.TestCase):
 
 
 class ReleaseConsistencyTests(unittest.TestCase):
-    """The one-liner fetches the program at the tag baked into the launcher; all three must agree."""
+    """The README one-liners fetch the launcher from `main` (a URL that never changes); the launcher
+    fetches the program at the tag baked into it, which must be the version in this file."""
 
-    def test_launcher_tags_match_tool_version(self):
-        import re
+    def test_launcher_default_tag_is_the_tool_version(self):
         tag = f"v{doc.TOOL_VERSION}"
         sh = (ROOT / "doctor.sh").read_text(encoding="utf-8")
         ps = (ROOT / "doctor.ps1").read_text(encoding="utf-8")
         self.assertIn(f'DOCTOR_TAG="${{DOCTOR_TAG:-{tag}}}"', sh)
         self.assertIn(f'else {{ "{tag}" }}', ps)
+
+    def test_readme_one_liners_point_at_main(self):
+        import re
+        main = "https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/"
         for readme in (ROOT / "README.md", ROOT / "docs" / "i18n" / "zh" / "README.md"):
-            tags = set(re.findall(r"lerobot-doctor/(v\d+\.\d+\.\d+)/", readme.read_text(encoding="utf-8")))
-            self.assertEqual(tags, {tag}, readme)
+            text = readme.read_text(encoding="utf-8")
+            self.assertIn(main + "doctor.sh | bash", text, readme)
+            self.assertIn(main + "doctor.ps1 | iex", text, readme)
+            self.assertEqual(re.findall(r"lerobot-doctor/v\d+\.\d+\.\d+/", text), [], readme)
 
     def test_ps1_is_pure_ascii(self):
         """Windows PowerShell 5.1 reads a BOM-less .ps1 in the ANSI code page and a BOM breaks `irm | iex`."""
