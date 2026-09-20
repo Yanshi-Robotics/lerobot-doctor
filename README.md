@@ -9,16 +9,6 @@
 
 One command that tells you whether your computer can run LeRobot 0.6.1 for an SO-101 arm, and how far: which policies it can run in real time, which it can train, and what to do in the cloud instead.
 
-## Overview
-
-People starting with LeRobot usually own an ordinary laptop or desktop and cannot tell in advance whether it will train an ACT policy overnight, run a vision-language-action model at 30 Hz, or do neither. `lerobot-info` prints versions, and the official hardware guide is a static table with a ±50 % error bar. LeRobot Doctor answers by doing the work for real: it builds its own environment, installs `lerobot==0.6.1`, and runs five representative policies on an official SO-101 recording, measuring inference latency, driving a 3D SO-101 in your browser for a ten-second task, and taking real training steps while stepping the batch size down until it fits.
-
-Every verdict carries its evidence. A "cannot" is printed only after a measured failure or an arithmetic floor such as `weights 16.9 GB > VRAM 15.9 GB`. Anything that could not be tested says so, with the reason.
-
-![The 3D simulation page while a policy drives the SO-101](docs/images/sim-page.png)
-
-![The final report, as printed in the terminal on an RTX 5070 Ti machine](docs/images/report.png)
-
 ## Quick start
 
 Copy one block (the copy button appears when you hover over it), paste it into a terminal, press Enter.
@@ -44,6 +34,16 @@ irm https://raw.githubusercontent.com/Yanshi-Robotics/lerobot-doctor/main/doctor
 Prefer a download: get the ZIP of this repository, unpack it, then double-click `doctor.bat` on Windows, drag `doctor.command` into a Terminal window on macOS, or run `bash doctor.sh` on Linux.
 
 Expect 30 to 90 minutes, most of it downloads (about 7 GB of packages and 13 GB of model weights), and about 30 GB of free disk. The screen always shows what is happening; `Ctrl-C` stops the run and keeps the finished parts. If the program itself crashes, it writes `~/lerobot-doctor/logs/crash-<time>.log`, prints the path, and on Windows waits for Enter before the window closes; open an issue with that file and the report JSON. Model weights go to the standard Hugging Face cache, so a later LeRobot course reuses them.
+
+## Overview
+
+People starting with LeRobot usually own an ordinary laptop or desktop and cannot tell in advance whether it will train an ACT policy overnight, run a vision-language-action model at 30 Hz, or do neither. `lerobot-info` prints versions, and the official hardware guide is a static table with a ±50 % error bar. LeRobot Doctor answers by doing the work for real: it builds its own environment, installs `lerobot==0.6.1`, and runs five representative policies on an official SO-101 recording, measuring inference latency, driving a 3D SO-101 in your browser for a ten-second task, and taking real training steps while stepping the batch size down until it fits.
+
+Every verdict carries its evidence. A "cannot" is printed only after a measured failure or an arithmetic floor such as `weights 16.9 GB > VRAM 15.9 GB`. Anything that could not be tested says so, with the reason.
+
+![The 3D simulation page while a policy drives the SO-101](docs/images/sim-page.png)
+
+![The final report, as printed in the terminal on an RTX 5070 Ti machine](docs/images/report.png)
 
 ## Key features
 
